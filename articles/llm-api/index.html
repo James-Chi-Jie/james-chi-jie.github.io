@@ -1,0 +1,153 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="从文字输入到 Token、Embedding、Transformer，再到逐 Token 生成，串起一次文本 API 请求的完整信息流。"><link rel="canonical" href="https://james-chi-jie.github.io/articles/llm-api/"><meta name="theme-color" content="#f8fafc"><title>从一次 LLM API 调用开始：模型究竟怎样生成回答？ · James Notes</title><style>:root{color:#172336;font-synthesis:none;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,SF Pro Text,PingFang SC,Microsoft YaHei,system-ui,sans-serif}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0}a{color:inherit}img{max-width:100%}.shell{max-width:1120px;margin:0 auto;padding:0 28px}.topbar{background:#fff;border-bottom:1px solid #e9edf2}.nav{justify-content:space-between;align-items:center;gap:20px;height:78px;display:flex}.brand{letter-spacing:-.4px;align-items:center;gap:12px;font-size:18px;font-weight:800;text-decoration:none;display:flex}.brand-mark{color:#fff;background:#182e52;border-radius:12px;place-items:center;width:38px;height:38px;font-size:14px;display:grid}.navlinks{color:#526175;align-items:center;gap:24px;font-size:14px;display:flex}.navlinks a{text-decoration:none}.navlinks a:hover{color:#2563eb}.main{min-height:calc(100vh - 174px)}.footer{color:#8390a0;background:#fff;border-top:1px solid #e5eaf0;padding:26px 0;font-size:13px}.footer-row{justify-content:space-between;gap:15px;display:flex}.eyebrow{letter-spacing:2px;color:#346db4;text-transform:uppercase;font-size:12px;font-weight:700}.muted{color:#637287}@media (width<=650px){.shell{padding:0 18px}.nav{height:64px}.navlinks{gap:12px;font-size:13px}.brand{font-size:16px}.footer-row{display:block}}
+.back{color:#6c7c91;margin-top:48px;font-size:14px;text-decoration:none;display:inline-block}.back:hover,.ending a:hover{color:#2563eb}.article-header{max-width:800px;margin:46px auto}.article-header .meta{color:#8090a0;align-items:center;gap:13px;font-size:13px;display:flex}.article-header .meta span{color:#3469a4;background:#e8f1ff;border-radius:6px;padding:5px 10px;font-weight:700}.article-header h1{letter-spacing:-1.3px;color:#1b2d45;margin:20px 0;font-size:clamp(32px,4.6vw,48px);line-height:1.4}.article-header p{color:#65748a;font-size:17px;line-height:1.9}.paper{background:#fff;border:1px solid #e9edf3;border-radius:20px;max-width:900px;margin:auto;padding:62px 74px;box-shadow:0 16px 56px #0b254508}.prose{color:#29384c;overflow-wrap:anywhere;font-size:16px;line-height:2}.prose>:first-child{margin-top:0}.prose h2{color:#172f51;letter-spacing:-.5px;border-top:1px solid #eef1f4;margin:58px 0 22px;padding-top:10px;font-size:25px;line-height:1.45}.prose h3{color:#203c5b;margin:35px 0 16px;font-size:20px}.prose p{margin:16px 0}.prose a{color:#286fb7;text-underline-offset:3px}.prose strong{color:#1e334e;font-weight:700}.prose blockquote{color:#516b87;background:#f5f9ff;border-left:3px solid #74a6dc;border-radius:0 8px 8px 0;margin:24px 0;padding:10px 20px}.prose blockquote p{margin:2px 0}.prose img{border:1px solid #edf1f5;border-radius:12px;width:auto;max-width:100%;height:auto;margin:28px auto 12px;display:block}.prose p:has(>img){margin-bottom:4px}.prose em{color:#77869a}.prose pre{color:#e2eaf5;background:#182538;border-radius:12px;margin:24px 0;padding:22px 25px;font:13px/1.8 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;overflow-x:auto}.prose code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:.88em}.prose :not(pre)>code{color:#24578d;background:#edf4fd;border-radius:4px;padding:2px 5px}.prose table{border-collapse:collapse;width:100%;margin:22px 0;font-size:14px;line-height:1.6;display:block;overflow-x:auto}.prose th,.prose td{text-align:left;border:1px solid #e1e7ee;padding:11px 14px}.prose th{background:#f4f7fb;font-weight:700}.prose ul,.prose ol{padding-left:24px}.prose li{padding:3px 0}.prose hr{border:0;border-top:1px solid #e5eaf1;margin:40px 0}.ending{max-width:800px;margin:40px auto 80px}.ending a{color:#6c7c91;font-size:14px;text-decoration:none}@media (width<=850px){.paper{padding:36px 32px}}@media (width<=600px){.back{margin-top:30px}.article-header{margin:24px 0 30px}.article-header h1{font-size:29px}.article-header p{font-size:15px}.paper{border-left:0;border-right:0;border-radius:0;margin:0 -18px;padding:28px 18px}.prose{font-size:15px;line-height:1.9}.prose h2{font-size:21px}.prose h3{font-size:18px}.prose pre{padding:15px;font-size:12px}.prose table{font-size:13px}}
+</style></head><body><header class="topbar"><div class="shell nav"><a class="brand" href="/"><span class="brand-mark">JN</span><span>James Notes</span></a><nav class="navlinks" aria-label="主导航"><a href="/">文章</a><a href="https://github.com/James-Chi-Jie" target="_blank" rel="noreferrer">GitHub ↗</a></nav></div></header><main class="main"><div class="shell"><a class="back" href="/">← 所有文章</a><header class="article-header"><div class="meta"><span>AI &amp; Agent</span><time datetime="2026-10-29">2026-10-29</time></div><h1>从一次 LLM API 调用开始：模型究竟怎样生成回答？</h1><p>从文字输入到 Token、Embedding、Transformer，再到逐 Token 生成，串起一次文本 API 请求的完整信息流。</p></header><div class="paper"><article class="prose"><p>假设我们在应用里接入了一个大语言模型。用户输入：</p>
+<blockquote>
+<p>为什么天空是蓝色的？</p>
+</blockquote>
+<p>我们的代码可能只有这样几行：</p>
+<pre><code class="language-python"># 伪代码，用来表示普通的文本对话请求，并非某个具体 SDK 的接口
+response = llm.chat(
+    messages=[{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;为什么天空是蓝色的？&quot;}],
+    stream=True,
+)
+</code></pre>
+<p>接下来，屏幕上开始出现模型的回答。</p>
+<p>站在应用开发者的角度，我们似乎只是发起了一次网络请求，然后接收返回的文字。可如果把视线往 API 内部移一点，就会发现几个值得追问的地方：请求里传的是一段中文，模型里的大量计算却是针对数字进行的，<strong>文字是怎样进入这些计算的？</strong> 有时我们要等一小段时间才看见第一段输出，之后内容逐渐出现，<strong>为什么不是一次性把整段回答交回来？</strong> 即使问题没变，两次回答的措辞也可能不同，<strong>模型是怎样决定接下来输出什么的？</strong></p>
+<p>答案并不是由一个单独的步骤直接写出来的。一次普通的文本生成请求，会经历输入转换、模型计算和持续生成等环节。沿着数据的变化过程往下看，就能逐渐理解这些环节如何协作。</p>
+<h2>先看完整过程：一条消息怎样变成回答？</h2>
+<p>可以先把它理解成这样一条信息流：</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/llm-api/v06/3545773f6cc9d49a70bf7d381959e188e9c5443a61607bf6b69c4060025c5f81/%E5%9B%BE01-API%E4%BF%A1%E6%81%AF%E6%B5%81.png" alt="一次 LLM API 调用的完整信息流"></p>
+<p><em>图 01：概念总览。输入先被转换为数值表示，模型处理已有上下文后逐步生成，已经产生的文字可以通过 API 交付给应用。图中 Prefill 的标注是教学分区；严格说它指模型对已有上下文的计算，并不包括完整的客户端网络请求。</em></p>
+<p>整条信息流里有两个值得注意的变化：输入文字先被转换成数值，才能进入模型计算；模型每选出一个新的 Token，又会把它放进后续计算的上下文中。我们看到的回答，就是这样逐步形成的。</p>
+<p>先从文字进入模型的过程说起。</p>
+<h2>一、模型接收的是文字，为什么要先做 Tokenization？</h2>
+<p>应用向 API 发送的，是人可以阅读的字符串。</p>
+<p>但在我们讨论的语言模型中，主体计算需要的是数值形式的输入。直接把“天”“空”“蓝”等字形放进矩阵，并不能让神经网络完成接下来的运算。</p>
+<p>因此，模型输入端通常会先进行一步转换：<strong>把文字表示为一串离散的 Token ID。</strong></p>
+<p>这个过程叫作 <em>Tokenization</em>，负责执行转换的组件叫 <em>Tokenizer</em>。</p>
+<p>先把 Token 理解成模型所使用的文本单位就够了。它有时可能对应一个字、一个词的一部分，或其他字符片段；<strong>不保证一个 Token 就是一个汉字或一个完整的词。</strong></p>
+<p>比如，图 02 使用一条英文短句展示一次真实编码中从文字到编号的变化。这里切换为英文，是为了能准确核对每个片段和对应的 ID；它并不意味着中文也要按这样的方式拆分。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/llm-api/v06/58817023490890eae4ea076610313bc7fea8fbb515937329a0237aac910d0640/%E5%9B%BE02-Tokenizer.png" alt="Tokenizer 把文字映射成 Token ID"></p>
+<p><em>图 02：OpenAI Cookbook 中 <code>o200k_base</code> 的示例：<code>tiktoken is great!</code> 可以编码为 <code>[83, 8251, 2488, 382, 2212, 0]</code>。图内的分词片段仅服务于理解切分过程，不同 Tokenizer 的结果可能不同。</em></p>
+<p>如果换回开头的“为什么天空是蓝色的？”，同样会得到一串 Token ID。不过，没有指定具体 Tokenizer，就不能从汉字数量直接推断 Token 数量。</p>
+<p>文字变成编号之后，已经可以用一串数字表示输入。但这些编号本身还不能表达词语之间的语义关系。</p>
+<p>一个 Token ID 本质上只是词表中的编号。假设两个 Token 的编号恰好是 100 和 101，数字相差 1，并不意味着它们的含义更接近。</p>
+<p><strong>如果编号本身没有这样的语义关系，模型接下来到底拿什么进行计算？</strong></p>
+<h2>二、Token ID 只是编号，模型怎样得到可计算的表示？</h2>
+<p>可以先借用程序中的一个熟悉操作：查表。</p>
+<p>假设我们有一张表，每个 Token ID 都能查到一组数字：</p>
+<table>
+<thead>
+<tr>
+<th>Token ID（示意）</th>
+<th>查到的数值向量（示意）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>100</td>
+<td>[0.2, -0.1, 0.7]</td>
+</tr>
+<tr>
+<td>101</td>
+<td>[-0.3, 0.5, 0.1]</td>
+</tr>
+</tbody></table>
+<p>这些数值是为了说明数据结构而随意设定的，<strong>不是任何真实模型学到的参数</strong>。</p>
+<p>Token ID 决定查哪一行，而查询结果不再是一个孤立的编号，而是一组可以参与后续计算的数字。这样的映射通常称为 <strong>Embedding</strong>。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/llm-api/v06/6590d5fbe93556e0158b365faa3fe5c940917f7370ee8f68bae290718f55aea9/%E5%9B%BE03-Embedding.png" alt="Token ID 怎样经由 Embedding Matrix 变成向量"></p>
+<p><em>图 03：中间展示“用 Token ID 查词嵌入矩阵，得到对应向量”；右侧二维散点图只是把高维关系做成容易理解的示意，并不代表模型内部真的在二维空间中存储意义。示例向量也不是实际模型参数。</em></p>
+<p>只有各个位置对应的向量还不够，模型也需要辨别顺序。“猫追狗”和“狗追猫”包含相同的词，表达的关系却完全不同。不同架构利用位置信息的方式不尽相同，例如有的会在 Attention 内部处理位置关系。</p>
+<p>还有一个容易混淆的问题：<strong>这些向量是谁写进表里的？</strong></p>
+<p>通常，它们属于模型训练过程中学到的参数。在实际的普通推理请求中，模型使用已经训练好的参数来计算，并不会因为用户每问一句话就重新训练一次。参数是怎样在训练中逐步调整的，属于另一段过程；一次普通推理请求使用的是已经学到的参数。</p>
+<p>原始文字经过 Token ID，最终变成一组可以参与计算的向量。但有了这些向量，还不足以处理整句话中的关系。</p>
+<p>因为每个位置上的表示还需要与上下文中的其他位置发生联系。例如，在“为什么天空是蓝色的？”这个问题里，模型需要综合利用整段输入，而不只是孤立地处理“天空”或“蓝色”。</p>
+<p><strong>那么，不同位置的数字表示究竟怎样交换信息？</strong></p>
+<h2>三、有了向量，模型怎样利用上下文？</h2>
+<p>到这里，每个输入位置都有了可以参与计算的数值表示。但如果这些位置始终只处理自己的信息，模型仍然很难利用一句话中不同部分的关系。</p>
+<p>仍以“为什么天空是蓝色的？”为例，模型需要处理的不是孤立的“天空”和“蓝色”，而是它们共同构成的提问。为了看清其中的困难，不妨换一个关系更容易观察的短句：</p>
+<blockquote>
+<p>小明拿起钥匙，把它放进口袋。</p>
+</blockquote>
+<p>只看“它”这个字，无法知道它指向什么；把前面的“钥匙”放进同一段上下文，才有了理解这句话的线索。这里的汉字和词只是便于阅读的片段，<strong>不代表某个 Tokenizer 的实际切分结果</strong>。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/llm-api/v06/8c08280d2b8b5a66813a13cdb6df4790a6ab0bcbee7b10a3ce37fd39bc243568/%E5%9B%BE04-1-%E4%B8%8A%E4%B8%8B%E6%96%87%E5%BF%85%E8%A6%81%E6%80%A7.png" alt="为什么一个位置需要上下文信息"></p>
+<p>因此，我们希望一个位置在更新自己的数值表示时，不只使用原先那组数字，还能够利用上下文中其他位置提供的信息。</p>
+<p>这就是 <strong>Attention（注意力机制）</strong> 要做的一类工作。</p>
+<p>不过，利用上下文并不是把其他词原样复制到当前位置。模型会根据当前参与计算的表示，计算各个可访问位置的相关权重，再把这些位置提供的数值信息按权重组合起来。不同位置可能贡献不同程度的信息；当前位置因此得到一份<strong>融入上下文的新数值表示</strong>。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/llm-api/v06/bee43d2a23027d94bb4ee25f34c3c56ab50e1e3129dc91859afc075ece854c4e/%E5%9B%BE04-2-Attention%E8%81%9A%E5%90%88.png" alt="Attention 按权重聚合不同位置的信息"></p>
+<p><em>图 04-2：权重为教学示意。以第 6 位“它”为例，在 GPT 类模型的因果注意力中，当前位置只使用第 1～6 位，灰色的第 7～9 位不会参与本次计算。图中画的是数值信息的聚合，而不是直接作出“它必定指钥匙”的判断。</em></p>
+<p>在上面的句子中，“钥匙”可以为“它”所在的位置提供有用线索。但注意力权重不等于模型对代词指向的明确判决，也不能凭一根连线就断言某个注意力头真正理解了指代关系。</p>
+<p>Attention 只是 Transformer 中的一部分。经过多层注意力和其他计算，各位置的表示会进一步更新。对于最开始的“为什么天空是蓝色的？”这个问题，模型也会以类似方式利用已有上下文进行计算。</p>
+<p>到这里，Transformer 产生的<strong>仍然是数值表示，而不是写好的文字答案</strong>。下一步才轮到输出层：它怎样利用这些数字，决定接下来生成哪个 Token？</p>
+<h2>四、模型如何决定下一个 Token？</h2>
+<p>沿着刚才的流程继续往下走。Transformer 已经把输入中的上下文信息融入数值表示，但它交出的仍然是一组数字。<strong>这些数字怎样变成“下一步写什么”的选择？</strong></p>
+<p>对于典型的 GPT 类模型，模型会取当前序列最后一个位置经过 Transformer 处理后的表示，交给<strong>输出层</strong>。输出层利用训练时学到的一组权重，把这组表示转换为词表中各个 Token 对应的分数。这些分数叫作 <strong>logits</strong>。</p>
+<p>那么，这些候选 Token 又是从哪里来的？它们并不是模型临时从问题中挑选出的几个关键词。模型本来就有一套用于编码和输出的 <strong>Token 词表</strong>，输出层通常会给词表中的每个 Token 计算一个分数。比如，假设词表有 10 万个 Token，模型就会得到一组大约 10 万个分数。<strong>不是先找出三个候选，再只对它们打分。</strong></p>
+<p>有了这些分数，模型才会按照生成策略决定下一步：可以直接选择得分最高的 Token，也可以将分数转换为概率、限制候选范围，再从中采样。无论哪种方式，模型都不是提前写好整段回答，再一个字一个字显示出来。</p>
+<p>回到“为什么天空是蓝色的？”。为了看清“打分”和“选择”的区别，假设模型已经生成了这样一段回答：</p>
+<blockquote>
+<p>天空呈现蓝色，主要是因为太阳光在大气中发生了……</p>
+</blockquote>
+<p>接下来会写什么？我们用“散射 / 反射 / 折射”代表三个容易联想到的<strong>续写方向</strong>，人为设置得分为 2、1、0，并且<strong>暂时只在这三个假设选项之间计算概率</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>候选续写内容（示意）</th>
+<th align="right">假设的 logits</th>
+<th align="right">在三个示意选项内计算的概率（约）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>散射</td>
+<td align="right">2</td>
+<td align="right">66.5%</td>
+</tr>
+<tr>
+<td>反射</td>
+<td align="right">1</td>
+<td align="right">24.5%</td>
+</tr>
+<tr>
+<td>折射</td>
+<td align="right">0</td>
+<td align="right">9.0%</td>
+</tr>
+</tbody></table>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/llm-api/v06/35e2be6fdaa3de8d4bb638dd36053817463dd5720de00272d845ffcaf4478463/%E5%9B%BE05-%E9%A2%84%E6%B5%8B%E4%B8%8B%E4%B8%80%E4%B8%AAToken.png" alt="模型如何从候选内容中选择下一步"></p>
+<p><em>图 05：这里把三个中文词语当作便于阅读的续写方向，并用 Softmax 演示从分数到概率的转换。“散射”不一定是实际词表中的一个独立 Token；这三个百分比只对应人为设定的三项得分，并不是对真实模型整个词表的预测结果。</em></p>
+<p>如果采用<strong>贪心选择</strong>，这一轮会选择概率最高的示意候选“散射”；如果采用<strong>采样</strong>，也可能沿着其他方向生成。实际的候选范围和最终选择，还可能受到温度、Top-k、Top-p 等解码设置的影响。</p>
+<p>这样，同一个问题有时得到不同措辞，就不难理解了：生成过程未必每一步都选择最高分选项。不同的上下文和服务设置也会影响结果。</p>
+<p>还有一点容易混淆：<strong>下一个 Token 的概率不等于“这句话真实正确”的概率。</strong> 模型的分数用于决定接下来如何生成文字，不能直接当作事实核验的结论。</p>
+<p>刚刚只演示了一次选择。完整回答还需要模型继续往下生成。</p>
+<h2>五、为什么回答是逐步出现的？</h2>
+<p>关键在于：刚刚选出的内容并不是生成过程的终点。</p>
+<p>模型会把新生成的 Token 接到已有上下文之后，再依据扩展后的序列预测下一个 Token。新 Token 一个接一个地产生，直到出现结束标记、达到长度限制，或满足其他停止条件。</p>
+<p>例如，把“逐步生成”理解为一段不断增长的回答：</p>
+<blockquote>
+<p>“天空……” → “天空呈现……” → “天空呈现蓝色……” → “天空呈现蓝色，主要是因为……”</p>
+</blockquote>
+<p>这里每个引号里的文字是为了帮助阅读而展示的<strong>累计回答片段</strong>，并不是对真实 Token 切分的逐步实测。</p>
+<p>这称为<strong>自回归生成</strong>：生成下一步时，利用已经存在的前缀；而尚未生成的后续内容，此刻并不知道。对于这里讨论的 GPT 类模型，这也解释了为什么注意力计算要采用<strong>因果约束</strong>：一个位置可以利用自己以及前面的位置，却不能提前使用后面尚不应看到的信息。</p>
+<h3>为什么第一段回答有时要等一会儿？</h3>
+<p>回到开头那次 API 调用，我们常会遇到这样的体验：请求发出后先等待片刻，随后文字才持续出现。之所以会有这种差异，是因为模型推理通常包含两类不同的计算工作：</p>
+<p><strong>Prefill（处理已有上下文）</strong>：模型先处理请求中已经知道的输入，包括系统提供的上下文、历史消息以及本次提问。对于典型的 Transformer 推理，这些已知位置可以在一次阶段中批量参与计算，并用于形成首次预测。</p>
+<p><strong>Decode（增量生成）</strong>：随后每轮产生新的 Token，并继续预测下一步。后面的内容依赖前面刚刚选出的 Token，因此生成轮次有先后顺序。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/llm-api/v06/b1ed830d50efafec6495272cf1b6fc8000688ca92285421f1a53fca9442337ec/%E5%9B%BE06-Prefill%E4%B8%8EDecode.png" alt="Prefill、Decode 与 KV Cache 的关系"></p>
+<p><em>图 06：左侧 Prefill 处理已有输入；中间用可读片段表现回答逐渐变长；右侧的 KV Cache 是减少重复计算的机制补充，而不是第三个时间阶段。中文片段仅作过程示意。</em></p>
+<p>这不表示 Prefill “只读题”、Decode “才开始计算”。两者都涉及模型计算；区别在于处理的输入形态和工作特点。</p>
+<h3>每生成一个 Token，都要把历史全部重算吗？</h3>
+<p>如果每一步都把已经处理过的所有历史内容从头计算一遍，会造成大量重复工作。</p>
+<p>因此，很多 Transformer 推理实现会使用 <strong>KV Cache</strong>：把先前位置在注意力计算中得到的部分中间结果保留下来，供下一轮继续使用。</p>
+<p>可以把它理解为：<strong>以前已经算过、下一步仍用得上的部分结果，先保存起来。</strong></p>
+<p>但缓存不等于“后面不用再经过 Transformer”，更不代表下一段答案已经算好。新的 Token 仍需要参与当前轮的计算，缓存也需要占用内存。</p>
+<p>工程上因此会分别关注 <strong>TTFT（Time to First Token）</strong> 与<strong>生成速率</strong>。前者衡量请求开始到首个生成结果到达的时间，除了模型处理输入，还受到排队、网络和服务实现等因素影响；后者通常用每秒生成多少 Token 来衡量，关注后续持续生成的速度，不能直接换算成每秒显示多少个汉字。</p>
+<p>我们在代码中打开了流式返回，应用就可以逐步接收生成结果并更新界面。但要注意：<strong>一次流式返回的数据片段，不保证恰好对应一个 Token</strong>；它是 API 交付结果的方式，而不是模型内部计算的精确镜像。</p>
+<p>到这里，开头的三个问题基本都能回答了：输入为什么要数字化、回复为什么可能逐步出现、同一问题为什么可能有不同措辞。</p>
+<h2>回到最初的 API 调用</h2>
+<p>最开始，我们只是向 API 发送了一句“为什么天空是蓝色的？”，然后在屏幕上看到一段逐渐出现的回答。现在把视线重新放到这次请求上，里面的过程就清晰多了。</p>
+<p>服务端先把输入文字转换为 Token ID，再映射成可计算的数值表示；模型结合上下文进行多层计算，为接下来可能出现的 Token 打分，并按解码策略选出一个。新 Token 又成为后续生成的上下文，如此循环，直到回答结束。如果 API 开启了流式返回，已经产生的内容可以在生成期间陆续送到客户端。</p>
+<p>我们讨论的是<strong>使用现有参数生成文字的推理过程</strong>，并不是模型每收到一个问题就重新学习一次。模型参数从何而来、为什么能承载语言规律，属于训练阶段的问题。工具调用也不是普通文本回答的必经步骤；只有应用需要访问外部信息或执行操作时，才会出现模型提出调用意图、应用执行并反馈结果的额外流程。</p>
+<p>至此，最初看起来简单的 API 调用，已经能拆成一条从输入到输出的连续信息流。而这条信息流的第一步，还藏着一个值得细看的问题：我们输入的是一句完整的中文，Tokenizer 为什么不一定按一个汉字或一个词来切分？</p>
+<p>这不仅关系到模型读入了什么，也直接影响上下文长度的计算方式，以及开发者实际遇到的 Token 用量和成本。</p>
+<hr>
+<p><em>延伸技术资料：<a href="https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb">OpenAI Cookbook：How to count tokens with tiktoken</a>、<a href="https://huggingface.co/docs/transformers/generation_strategies">Hugging Face：Generation Strategies</a>、<a href="https://huggingface.co/docs/transformers/cache_explanation">Hugging Face：KV Cache</a>。</em></p>
+</article></div><div class="ending"><a href="/">← 返回文章列表</a></div></div></main><footer class="footer"><div class="shell footer-row"><span>© 2026 James Notes · 保持好奇，持续验证</span><span>Built with Astro · Published from Git</span></div></footer></body></html>
