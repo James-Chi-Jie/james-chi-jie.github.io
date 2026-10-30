@@ -1,0 +1,282 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="从词表条目与 Token 数的区别出发，通过 BPE 和 SentencePiece 实验理解子词切分的收益、边界与代价。"><link rel="canonical" href="https://james-chi-jie.github.io/articles/tokenization/"><meta name="theme-color" content="#f8fafc"><title>为什么 LLM 不按字或单词阅读？从 Tokenization 的取舍说起 · James Notes</title><style>:root{color:#172336;font-synthesis:none;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,SF Pro Text,PingFang SC,Microsoft YaHei,system-ui,sans-serif}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0}a{color:inherit}img{max-width:100%}.shell{max-width:1120px;margin:0 auto;padding:0 28px}.topbar{background:#fff;border-bottom:1px solid #e9edf2}.nav{justify-content:space-between;align-items:center;gap:20px;height:78px;display:flex}.brand{letter-spacing:-.4px;align-items:center;gap:12px;font-size:18px;font-weight:800;text-decoration:none;display:flex}.brand-mark{color:#fff;background:#182e52;border-radius:12px;place-items:center;width:38px;height:38px;font-size:14px;display:grid}.navlinks{color:#526175;align-items:center;gap:24px;font-size:14px;display:flex}.navlinks a{text-decoration:none}.navlinks a:hover{color:#2563eb}.main{min-height:calc(100vh - 174px)}.footer{color:#8390a0;background:#fff;border-top:1px solid #e5eaf0;padding:26px 0;font-size:13px}.footer-row{justify-content:space-between;gap:15px;display:flex}.eyebrow{letter-spacing:2px;color:#346db4;text-transform:uppercase;font-size:12px;font-weight:700}.muted{color:#637287}@media (width<=650px){.shell{padding:0 18px}.nav{height:64px}.navlinks{gap:12px;font-size:13px}.brand{font-size:16px}.footer-row{display:block}}
+.back{color:#6c7c91;margin-top:48px;font-size:14px;text-decoration:none;display:inline-block}.back:hover,.ending a:hover{color:#2563eb}.article-header{max-width:800px;margin:46px auto}.article-header .meta{color:#8090a0;align-items:center;gap:13px;font-size:13px;display:flex}.article-header .meta span{color:#3469a4;background:#e8f1ff;border-radius:6px;padding:5px 10px;font-weight:700}.article-header h1{letter-spacing:-1.3px;color:#1b2d45;margin:20px 0;font-size:clamp(32px,4.6vw,48px);line-height:1.4}.article-header p{color:#65748a;font-size:17px;line-height:1.9}.paper{background:#fff;border:1px solid #e9edf3;border-radius:20px;max-width:900px;margin:auto;padding:62px 74px;box-shadow:0 16px 56px #0b254508}.prose{color:#29384c;overflow-wrap:anywhere;font-size:16px;line-height:2}.prose>:first-child{margin-top:0}.prose h2{color:#172f51;letter-spacing:-.5px;border-top:1px solid #eef1f4;margin:58px 0 22px;padding-top:10px;font-size:25px;line-height:1.45}.prose h3{color:#203c5b;margin:35px 0 16px;font-size:20px}.prose p{margin:16px 0}.prose a{color:#286fb7;text-underline-offset:3px}.prose strong{color:#1e334e;font-weight:700}.prose blockquote{color:#516b87;background:#f5f9ff;border-left:3px solid #74a6dc;border-radius:0 8px 8px 0;margin:24px 0;padding:10px 20px}.prose blockquote p{margin:2px 0}.prose img{border:1px solid #edf1f5;border-radius:12px;width:auto;max-width:100%;height:auto;margin:28px auto 12px;display:block}.prose p:has(>img){margin-bottom:4px}.prose em{color:#77869a}.prose pre{color:#e2eaf5;background:#182538;border-radius:12px;margin:24px 0;padding:22px 25px;font:13px/1.8 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;overflow-x:auto}.prose code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:.88em}.prose :not(pre)>code{color:#24578d;background:#edf4fd;border-radius:4px;padding:2px 5px}.prose table{border-collapse:collapse;width:100%;margin:22px 0;font-size:14px;line-height:1.6;display:block;overflow-x:auto}.prose th,.prose td{text-align:left;border:1px solid #e1e7ee;padding:11px 14px}.prose th{background:#f4f7fb;font-weight:700}.prose ul,.prose ol{padding-left:24px}.prose li{padding:3px 0}.prose hr{border:0;border-top:1px solid #e5eaf1;margin:40px 0}.ending{max-width:800px;margin:40px auto 80px}.ending a{color:#6c7c91;font-size:14px;text-decoration:none}@media (width<=850px){.paper{padding:36px 32px}}@media (width<=600px){.back{margin-top:30px}.article-header{margin:24px 0 30px}.article-header h1{font-size:29px}.article-header p{font-size:15px}.paper{border-left:0;border-right:0;border-radius:0;margin:0 -18px;padding:28px 18px}.prose{font-size:15px;line-height:1.9}.prose h2{font-size:21px}.prose h3{font-size:18px}.prose pre{padding:15px;font-size:12px}.prose table{font-size:13px}}
+</style></head><body><header class="topbar"><div class="shell nav"><a class="brand" href="/"><span class="brand-mark">JN</span><span>James Notes</span></a><nav class="navlinks" aria-label="主导航"><a href="/">文章</a><a href="https://github.com/James-Chi-Jie" target="_blank" rel="noreferrer">GitHub ↗</a></nav></div></header><main class="main"><div class="shell"><a class="back" href="/">← 所有文章</a><header class="article-header"><div class="meta"><span>AI &amp; Agent</span><time datetime="2026-10-30">2026-10-30</time></div><h1>为什么 LLM 不按字或单词阅读？从 Tokenization 的取舍说起</h1><p>从词表条目与 Token 数的区别出发，通过 BPE 和 SentencePiece 实验理解子词切分的收益、边界与代价。</p></header><div class="paper"><article class="prose"><p>我们写程序时，很容易把“文本切分”理解为一个字符串操作：按空格拆成单词，或者遍历字符数组。</p>
+<p>但如果让你为一个语言模型设计输入格式，会很快遇到麻烦。假设用户发送了：</p>
+<p><code>我喜欢 Swift programming</code></p>
+<p>应该把它拆成几个单位？按汉字、英文单词、字符，还是干脆按 UTF-8 字节？这些选择看上去只是拆分方式不同，却会影响模型能够处理哪些文字、每句话有多长，以及计算时要付出什么代价。</p>
+<p>在<a href="../00-llm-api/index.md">上一篇文章</a>里，我们知道了模型会先把输入文字转换为 Token ID。但那篇文章没有回答一个更基础的问题：<strong>为什么要把文字切成这样的单位，而不是直接按字或完整单词处理？</strong></p>
+<p>这次我们从头设计一套切分方案，看看问题究竟出在哪里。</p>
+<h2>一、先分清两个容易混淆的数字</h2>
+<p>假设我们现在只有三个可识别的片段：</p>
+<p><code>pro</code>、<code>gram</code>、<code>ming</code></p>
+<p>把这三个片段放在一张表里，给每个片段分配不同的编号，它们就构成一个最简单的玩具词表。</p>
+<p>当输入 <code>programming</code> 时，我们可以把它表示成：</p>
+<p><code>pro | gram | ming</code></p>
+<p>此时有两个数字：</p>
+<ul>
+<li><strong>词表大小是 3</strong>：词表总共有三种不同的条目。</li>
+<li><strong>这段文本的 Token 数是 3</strong>：编码 <code>programming</code> 用到了三个条目。</li>
+</ul>
+<p>现在，我们希望这个常见单词只用一个 Token 表示。方法是将 <code>programming</code> 也加入词表。原有的 <code>pro</code>、<code>gram</code>、<code>ming</code> 仍然保留，因为它们可能用于其他文本。</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>原来的玩具词表</th>
+<th>扩充后的玩具词表</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>可用条目</td>
+<td><code>pro</code>、<code>gram</code>、<code>ming</code></td>
+<td><code>pro</code>、<code>gram</code>、<code>ming</code>、<code>programming</code></td>
+</tr>
+<tr>
+<td>词表大小</td>
+<td>3</td>
+<td>4</td>
+</tr>
+<tr>
+<td>编码 <code>programming</code> 的 Token 数</td>
+<td>3</td>
+<td>1</td>
+</tr>
+</tbody></table>
+<p><strong>增加词表条目，可能减少某段文本的 Token 数。</strong> 这两个数量恰好朝相反方向变化。</p>
+<p>它们也是后面所有取舍的起点：词表是模型需要维护的“可用单位全集”，而一段文本的 Token 数是这次处理实际用到的单位个数。不能因为一句话只切成一个 Token，就认为词表里只需要存一个条目。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/tokenization/v03/1394ad9175b6ec25b91a0c98fd8229a9b68a49bdf34adfbe7d680f2cb836b12e/%E5%9B%BE01-%E8%AF%8D%E8%A1%A8%E5%A4%A7%E5%B0%8F%E4%B8%8EToken%E6%95%B0%E9%87%8F.png" alt="图01：词表条目与编码后 Token 数量的区别"></p>
+<p><em>图 01：玩具词表示意：词表从 3 条目增加到 4 条目，<code>programming</code> 的编码结果从 3 个 Token 变为 1 个。并非真实模型的 Token ID。</em></p>
+<h2>二、那为什么不把所有单词都放进词表？</h2>
+<p>直接按单词切分有个明显的好处：常见英文单词可能只需要一个 Token。</p>
+<p>但问题是，<strong>什么才算一个单词，以及词表能不能事先收录所有可能的单词？</strong></p>
+<p>以开发中的函数名为例：</p>
+<p><code>fetchUserProfileAsync</code></p>
+<p>它不是自然语言词典里必然存在的单词，但程序随时可能创造这样的标识符。英文的词形变化、拼写错误、专有名词，以及不依靠空格分词的中文，也会让“列出所有完整单词”的方案越来越难维持。</p>
+<p>如果词表里没有完整的 <code>fetchUserProfileAsync</code>，模型是不是就没法表示它了？</p>
+<p>不一定。只要有适当的小片段，仍然可以把它拆成多个已知单位。比如一种<em>假设的</em>切分方式是：</p>
+<p><code>fetch | User | Profile | Async</code></p>
+<p>这个例子只是说明“可以用已有片段拼接”，不是对任何具体模型的实际编码结果。</p>
+<p>于是，我们希望词表既保留一些足够小、便于组合的基本单位，又收录一部分高频的长片段。</p>
+<p>但选哪些长片段比较划算？</p>
+<h2>三、BPE：让高频片段逐步变成新单位</h2>
+<p>一种常见方法是 BPE（Byte Pair Encoding）。它的核心直觉可以先用字符级的玩具语料来理解：<strong>反复寻找当前最常见的相邻片段组合，把它们合并为一个新片段。</strong></p>
+<p>假设训练语料只有四个单词：</p>
+<pre><code class="language-text">low
+lower
+lowest
+low
+</code></pre>
+<p>先按字母拆开：</p>
+<pre><code class="language-text">l | o | w
+l | o | w | e | r
+l | o | w | e | s | t
+l | o | w
+</code></pre>
+<p>这里的“相邻”很具体：在 <code>low</code> 中，<code>l+o</code> 和 <code>o+w</code> 相邻，<code>l+w</code> 却不相邻，因为中间隔着 <code>o</code>。</p>
+<p>再统计整个语料中出现了多少次：</p>
+<table>
+<thead>
+<tr>
+<th>相邻组合</th>
+<th align="right">次数</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>l + o</code></td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td><code>o + w</code></td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td><code>w + e</code></td>
+<td align="right">2</td>
+</tr>
+<tr>
+<td><code>e + r</code></td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td><code>e + s</code></td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td><code>s + t</code></td>
+<td align="right">1</td>
+</tr>
+</tbody></table>
+<p><code>low</code> 在语料中重复出现两次，所以它的相邻组合也要计数两次。</p>
+<p>最高频次出现了并列。为了演示，我们规定先合并 <code>l+o</code>，于是整个语料变成：</p>
+<pre><code class="language-text">lo | w
+lo | w | e | r
+lo | w | e | s | t
+lo | w
+</code></pre>
+<p>这时，<code>lo</code> 已经是<strong>下一轮统计中的一个单位</strong>了。重新统计，相邻组合 <code>lo+w</code> 出现四次，于是可以继续合并：</p>
+<pre><code class="language-text">low
+low | e | r
+low | e | s | t
+low
+</code></pre>
+<p>经过两轮，原来需要三个字母单位的 <code>low</code>，现在只需要一个。与直接把所有可能单词收进词表不同，这种方法使用语料里反复出现的组合，逐步决定哪些更长片段值得加入。</p>
+<p>为什么要看频率？在这个简化例子中，合并出现四次的片段组合，会让训练语料中的片段总数减少四个；合并只出现一次的组合，只能减少一个。<strong>同样新增一个词表条目，高频合并通常能在当前语料中节省更多编码位置。</strong></p>
+<p>不过真实 Tokenizer 并不一定从 Unicode 字符开始做 BPE，也可能涉及字节、预切分或其他规则。上面的四个单词只用来展示合并机制，不能当作 <code>o200k_base</code> 或其他生产 Tokenizer 的训练记录。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/tokenization/v03/f533476bcb735d17f927cf7e7eb120839adab3d957e51877ce63ef20af1d7fe7/%E5%9B%BE02-BPE%E4%B8%A4%E8%BD%AE%E9%AB%98%E9%A2%91%E5%90%88%E5%B9%B6.png" alt="图02：BPE 对高频相邻片段进行两轮合并"></p>
+<p><em>图 02：字符级 BPE 教学示例。<code>l+o</code> 与 <code>o+w</code> 最初均出现 4 次；先按约定合并 <code>l+o</code>，再合并 <code>lo+w</code>。</em></p>
+<h2>四、真实实验：词表翻倍，Token 数会减半吗？</h2>
+<p>接下来我们不只靠推理，而是运行一组小实验。</p>
+<p>使用 SentencePiece 0.2.1，在同一份包含中英文和 Swift 示例的玩具语料上分别训练词表大小为 128 和 256 的 BPE Tokenizer。训练语料有 12 条不同样本，重复 40 遍，共 480 行；它很小且刻意重复，适合检验机制，却不能代表 GPT 等生产模型的训练数据。</p>
+<p>以下是<a href="experiment-01.md">实验记录</a>中的实际结果：</p>
+<table>
+<thead>
+<tr>
+<th>输入文本</th>
+<th align="right">128 词表</th>
+<th align="right">256 词表</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>我喜欢 Swift programming</code></td>
+<td align="right">6</td>
+<td align="right">3</td>
+</tr>
+<tr>
+<td><code>Hello, world!</code></td>
+<td align="right">14</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td><code>func fetchUser() async throws</code></td>
+<td align="right">11</td>
+<td align="right">5</td>
+</tr>
+<tr>
+<td><code>fetchUserProfileAsync</code></td>
+<td align="right">4</td>
+<td align="right">2</td>
+</tr>
+<tr>
+<td><code>programming</code></td>
+<td align="right">1</td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td><code>我喜欢编程 😀</code></td>
+<td align="right">8</td>
+<td align="right">3</td>
+</tr>
+</tbody></table>
+<p>对我们一开始那句 <code>我喜欢 Swift programming</code>，实际切分分别是：</p>
+<pre><code class="language-text">128 词表：
+▁ | 我 | 喜 | 欢 | ▁Swift | ▁programming
+
+256 词表：
+▁我喜欢 | ▁Swift | ▁programming
+</code></pre>
+<p><code>▁</code> 是 SentencePiece 用来表示空格边界的可见记号。这个对照告诉我们，在较大的词表里，<code>我喜欢</code> 已经可以作为更长的片段出现。</p>
+<p>再看函数名：</p>
+<pre><code class="language-text">128 词表：
+▁fetchUser | Profile | A | sync
+
+256 词表：
+▁fetchUser | ProfileAsync
+</code></pre>
+<p>较大的词表收录了 <code>ProfileAsync</code> 这样的组合，因此减少了片段数。</p>
+<p>但是，<code>programming</code> 在两套词表里都只占一个 Token：它已经无法从一个 Token 再缩短成“半个 Token”。<strong>词表扩大，收益并不会平均分配给每段文本。</strong></p>
+<p>实验里的六条文本都通过了编码后再解码等于原文的检查。可复现代码见<a href="experiments/sentencepiece_compare.py">SentencePiece 对照脚本</a>。</p>
+<p>需要强调的是：这里测到的是两套自训练 SentencePiece BPE 的切分结果，不是 GPT 的切分，也没有测量推理速度或 API 账单。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/tokenization/v03/16d453d2b55a3fe331002e9aef2eafcdf2e3ec9a6d39f9bef6790b2e20dc7d66/%E5%9B%BE03-SentencePiece%E5%AE%9E%E6%B5%8B%E5%88%87%E5%88%86%E5%AF%B9%E7%85%A7.png" alt="图03：SentencePiece 两种词表大小的真实切分对照"></p>
+<p><em>图 03：由同一玩具训练语料得到的 SentencePiece BPE 128 / 256 词表实测。<code>▁</code> 表示空格边界，并非下划线。仅代表本实验，不等于 GPT 的实际切分。</em></p>
+<h2>五、既然大词表可以减少 Token，为什么不继续扩大？</h2>
+<p>看到这里，你可能会有一个疑问：</p>
+<p>既然把更多常见片段加入词表，就能让同一段文字使用更少的 Token，那为什么不干脆把词表做得更大一些？</p>
+<p>比如，把常见的英文单词、中文词组，甚至经常出现的代码片段都收进去。这样模型每次需要处理的 Token 不就更少了吗？</p>
+<p>这个思路确实有道理，但我们忽略了一件事：<strong>词表并不只在切分文本时使用，它还会影响模型如何接收输入，以及如何生成输出。</strong></p>
+<p>词表越大，这两个环节的代价也会发生变化，只是变化的方式并不一样。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/tokenization/v03/970c0ffb9541503e38d81ff4fbff81eb3c79ed209d752d927e5966d1aef2a547/%E5%9B%BE04-%E8%AF%8D%E8%A1%A8%E6%94%B6%E7%9B%8A%E4%B8%8E%E8%BE%93%E5%85%A5%E8%BE%93%E5%87%BA%E4%BB%A3%E4%BB%B7.png" alt="图04：更少 Token 的收益，与输入端和输出端不同的资源代价"></p>
+<p><em>图 04：128 / 256 词表的 6→3、1→1 来自自训练 SentencePiece 0.2.1 玩具实验。输入端侧重 Embedding 参数与存储，输出端侧重标准完整词表输出层的单步计算；未测量真实 GPT 的切分与推理延迟。四张配图已由作者于 2026-10-30 确认；尚未公开发布。</em></p>
+<h3>输入端：词表越大，需要保存的向量越多</h3>
+<p>我们在上一篇文章里提到过，文字经过 Tokenizer 之后，会变成一串 Token ID。</p>
+<p>但 ID 本身只是编号，模型不能直接从编号中理解文字。因此，模型需要通过 Embedding，把每个 Token ID 转换成一个可学习的向量。</p>
+<p>你可以暂时把它理解为一张很大的表：每个 Token 对应其中的一行数字。</p>
+<p>现在假设词表有 5 万个 Token，每个 Token 对应一个 4096 维的向量。</p>
+<p>那么这张表需要保存多少个数字？</p>
+<p><code>50,000 × 4,096 = 204,800,000</code></p>
+<p>也就是大约 2 亿个参数。</p>
+<p>如果我们觉得 5 万还不够，把词表扩大到 50 万，而向量维度保持不变，这张表的参数量也会增加到原来的十倍。</p>
+<p>按每个参数占用 2 字节的 FP16 格式估算，仅这张 Embedding 表，就会从约 410 MB 增加到约 4.1 GB。</p>
+<p>但这里有个容易误解的地方。</p>
+<p><strong>表变大，不代表每次查找一个 Token 时，都要把整张表计算一遍。</strong></p>
+<p>就像通过数组下标找到某个元素，我们只需要找到对应的那一行向量，而不是遍历所有 Token。</p>
+<p>因此，词表变大给输入端带来的主要代价，是需要保存更多参数，占用更多存储和内存，而不是输入查表的计算量也跟着增加十倍。</p>
+<h3>输出端：词表越大，每次生成时要考虑的候选越多</h3>
+<p>到了模型生成文字的时候，情况就不一样了。</p>
+<p>假设模型已经处理完上下文，准备生成下一个 Token。</p>
+<p>它需要解决的问题是：<strong>接下来应该输出词表里的哪一个 Token？</strong></p>
+<p>在典型的语言模型中，输出层会为词表中的候选 Token 计算分数，再根据这些分数决定下一步输出什么。</p>
+<p>如果词表有 5 万个条目，输出层通常需要产生 5 万个候选分数。</p>
+<p>如果词表扩大到 50 万个条目，需要考虑的候选也就增加到了 50 万个。</p>
+<p>这与输入时根据 ID 查找一个向量不同。</p>
+<p><strong>输入端主要增加的是需要保存的参数；而输出端在常见的完整词表计算方式下，还会增加每一步的计算量。</strong></p>
+<p>当然，这不意味着整个模型的推理速度一定会降低十倍。输出层只是模型计算的一部分，实际实现中也存在权重共享和其他优化方式。</p>
+<h3>那么，减少 Token 带来的收益呢？</h3>
+<p>我们再回头看看前面的实验。</p>
+<p><code>我喜欢 Swift programming</code> 在 128 词表下需要 6 个 Token，扩大到 256 词表后，只需要 3 个。</p>
+<p>这意味着，模型处理这段文本时，需要面对的序列变短了。</p>
+<p>如果是在逐 Token 生成的过程中，能够用更少的 Token 表达相同内容，也就可能减少生成轮次。</p>
+<p>但另一段文本 <code>programming</code>，在两套词表中都只占 1 个 Token。</p>
+<p>它已经不可能再缩短成半个 Token 了。</p>
+<p>所以，随着词表不断扩大，我们并不能保证每次新增条目都能带来同样的收益。</p>
+<p>这就形成了一个有意思的取舍：</p>
+<p><strong>词表越大，可能让模型用更少的 Token 处理文本；但与此同时，模型需要保存更多参数，生成每个 Token 时也可能付出更高的计算代价。</strong></p>
+<p>至于哪一种词表规模更合适，就需要结合实际语料、模型结构以及运行环境来判断，而不能只根据词表大小下结论。</p>
+<p>我们前面的 SentencePiece 实验验证了 Token 数量的变化，但还没有测量真实模型的推理速度。因此，目前只能确认这两种相互制约的因素，不能直接算出最优词表大小。</p>
+<h2>六、那干脆所有文字都按 UTF-8 字节切分呢？</h2>
+<p>还有一个更彻底的方案：不把常见词组合作为大 Token，直接把文本编码成 UTF-8 字节，每个字节作为一个单位。</p>
+<p>这很容易获得广泛覆盖：单个字节有 256 种可能值，任何合法 UTF-8 文本都能够表示为字节序列。</p>
+<p>但字节数和人眼看到的字符数不同：</p>
+<table>
+<thead>
+<tr>
+<th>文本</th>
+<th align="right">Unicode 码点数量</th>
+<th align="right">UTF-8 字节数</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>A</code></td>
+<td align="right">1</td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td><code>中</code></td>
+<td align="right">1</td>
+<td align="right">3</td>
+</tr>
+<tr>
+<td><code>😀</code></td>
+<td align="right">1</td>
+<td align="right">4</td>
+</tr>
+<tr>
+<td><code>👨‍👩‍👧‍👦</code></td>
+<td align="right">7</td>
+<td align="right">25</td>
+</tr>
+</tbody></table>
+<p>比如汉字 <code>中</code> 的 UTF-8 字节是 <code>E4 B8 AD</code>。如果每个字节占一个 Token，它就需要三个 Token；但在能把这三个字节合并成一个词表条目的字节级 BPE 中，最终也可能只需要一个 Token。</p>
+<p>注意：Unicode 码点数量不一定等于人眼看到的字符数量，上表最后一行就是由多个码点组成的一个可见 Emoji。</p>
+<p>纯字节切分的词表虽然小，但常见单词、中文和 Emoji 往往会产生更长序列。对于自回归语言模型，输出更多 Token 意味着需要更多生成轮次。每轮输出层可能便宜，却未必能抵消额外的模型计算。</p>
+<p>反过来，如果一个 Tokenizer 只依赖收录的完整字符或片段，而没有合适的字节级覆盖机制，那么遇到词表外的字符时可能需要使用 <code>&lt;unk&gt;</code>，无法完整保留原文。这取决于具体实现，不能说所有 Tokenizer 都天然支持任意文本无损往返。</p>
+<p>由此我们能看出常见子词/字节级方案的吸引力：<strong>以较小的基础单位覆盖未知文本，同时将高频片段合并成较长 Token，避免总是付出纯字节序列的长度代价。</strong></p>
+<h2>回到最初的问题</h2>
+<p>最开始，我们只是想处理一句 <code>我喜欢 Swift programming</code>。现在再看 Tokenization，它就不只是“把字符串拆开”这么简单。</p>
+<p>如果只收录完整单词，词表难以覆盖不断出现的新词和代码标识符；如果只保留极小的字符或字节单位，序列又可能变得很长。BPE 等子词方法尝试在这两端找到折中：让常见组合使用较短的序列，又保留表示陌生输入的能力。</p>
+<p>这也解释了一个经常被忽略的事实：</p>
+<p><strong>一段文字有多少字、多少单词，并不能直接告诉我们它会占用多少 Token。</strong> 实际数字由具体 Tokenizer、词表和编码规则决定。应用向模型 API 发送的消息还可能包含其他封装和特殊标记，单独对正文运行 <code>encode</code> 也不等于最终计费 Token 数。</p>
+<p>不过，我们解决的是“怎样把文本转换成有限词表中的编号”，还没有解释另一个问题：一个 Token ID 只是编号，为什么模型通过这些编号就能学会预测有意义的文本？</p>
+<p>这个问题需要从模型参数怎样学习开始，再回头理解 Token ID 如何变成向量。</p>
+<hr>
+<p><em>实验与参考：本文使用<a href="experiment-01.md">自训练 SentencePiece BPE 对照实验</a>。可进一步参考 <a href="https://github.com/google/sentencepiece">SentencePiece</a>、<a href="https://github.com/openai/tiktoken">OpenAI tiktoken</a> 和 <a href="https://aclanthology.org/P16-1162/">Sennrich et al. (2016)</a>。生产级 Tokenizer 的跨编码验证尚未完成。</em></p>
+</article></div><div class="ending"><a href="/">← 返回文章列表</a></div></div></main><footer class="footer"><div class="shell footer-row"><span>© 2026 James Notes · 保持好奇，持续验证</span><span>Built with Astro · Published from Git</span></div></footer></body></html>
