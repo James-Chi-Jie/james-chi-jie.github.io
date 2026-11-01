@@ -1,0 +1,467 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="通过两个可核算的小实验，理解模型参数、Loss、梯度、学习率与反向传播，并区分 LLM 的训练与推理。"><link rel="canonical" href="https://james-chi-jie.github.io/articles/parameters-training/"><meta name="theme-color" content="#f8fafc"><title>模型参数究竟是什么？一次预测错误如何变成学习？ · James Notes</title><style>:root{color:#172336;font-synthesis:none;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,SF Pro Text,PingFang SC,Microsoft YaHei,system-ui,sans-serif}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0}a{color:inherit}img{max-width:100%}.shell{max-width:1120px;margin:0 auto;padding:0 28px}.topbar{background:#fff;border-bottom:1px solid #e9edf2}.nav{justify-content:space-between;align-items:center;gap:20px;height:78px;display:flex}.brand{letter-spacing:-.4px;align-items:center;gap:12px;font-size:18px;font-weight:800;text-decoration:none;display:flex}.brand-mark{color:#fff;background:#182e52;border-radius:12px;place-items:center;width:38px;height:38px;font-size:14px;display:grid}.navlinks{color:#526175;align-items:center;gap:24px;font-size:14px;display:flex}.navlinks a{text-decoration:none}.navlinks a:hover{color:#2563eb}.main{min-height:calc(100vh - 174px)}.footer{color:#8390a0;background:#fff;border-top:1px solid #e5eaf0;padding:26px 0;font-size:13px}.footer-row{justify-content:space-between;gap:15px;display:flex}.eyebrow{letter-spacing:2px;color:#346db4;text-transform:uppercase;font-size:12px;font-weight:700}.muted{color:#637287}@media (width<=650px){.shell{padding:0 18px}.nav{height:64px}.navlinks{gap:12px;font-size:13px}.brand{font-size:16px}.footer-row{display:block}}
+.back{color:#6c7c91;margin-top:48px;font-size:14px;text-decoration:none;display:inline-block}.back:hover,.ending a:hover{color:#2563eb}.article-header{max-width:800px;margin:46px auto}.article-header .meta{color:#8090a0;align-items:center;gap:13px;font-size:13px;display:flex}.article-header .meta span{color:#3469a4;background:#e8f1ff;border-radius:6px;padding:5px 10px;font-weight:700}.article-header h1{letter-spacing:-1.3px;color:#1b2d45;margin:20px 0;font-size:clamp(32px,4.6vw,48px);line-height:1.4}.article-header p{color:#65748a;font-size:17px;line-height:1.9}.paper{background:#fff;border:1px solid #e9edf3;border-radius:20px;max-width:900px;margin:auto;padding:62px 74px;box-shadow:0 16px 56px #0b254508}.prose{color:#29384c;overflow-wrap:anywhere;font-size:16px;line-height:2}.prose>:first-child{margin-top:0}.prose h2{color:#172f51;letter-spacing:-.5px;border-top:1px solid #eef1f4;margin:58px 0 22px;padding-top:10px;font-size:25px;line-height:1.45}.prose h3{color:#203c5b;margin:35px 0 16px;font-size:20px}.prose p{margin:16px 0}.prose a{color:#286fb7;text-underline-offset:3px}.prose strong{color:#1e334e;font-weight:700}.prose blockquote{color:#516b87;background:#f5f9ff;border-left:3px solid #74a6dc;border-radius:0 8px 8px 0;margin:24px 0;padding:10px 20px}.prose blockquote p{margin:2px 0}.prose img{border:1px solid #edf1f5;border-radius:12px;width:auto;max-width:100%;height:auto;margin:28px auto 12px;display:block}.prose p:has(>img){margin-bottom:4px}.prose em{color:#77869a}.prose pre{color:#e2eaf5;background:#182538;border-radius:12px;margin:24px 0;padding:22px 25px;font:13px/1.8 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;overflow-x:auto}.prose code{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:.88em}.prose :not(pre)>code{color:#24578d;background:#edf4fd;border-radius:4px;padding:2px 5px}.prose table{border-collapse:collapse;width:100%;margin:22px 0;font-size:14px;line-height:1.6;display:block;overflow-x:auto}.prose th,.prose td{text-align:left;border:1px solid #e1e7ee;padding:11px 14px}.prose th{background:#f4f7fb;font-weight:700}.prose ul,.prose ol{padding-left:24px}.prose li{padding:3px 0}.prose hr{border:0;border-top:1px solid #e5eaf1;margin:40px 0}.ending{max-width:800px;margin:40px auto 80px}.ending a{color:#6c7c91;font-size:14px;text-decoration:none}@media (width<=850px){.paper{padding:36px 32px}}@media (width<=600px){.back{margin-top:30px}.article-header{margin:24px 0 30px}.article-header h1{font-size:29px}.article-header p{font-size:15px}.paper{border-left:0;border-right:0;border-radius:0;margin:0 -18px;padding:28px 18px}.prose{font-size:15px;line-height:1.9}.prose h2{font-size:21px}.prose h3{font-size:18px}.prose pre{padding:15px;font-size:12px}.prose table{font-size:13px}}
+</style></head><body><header class="topbar"><div class="shell nav"><a class="brand" href="/"><span class="brand-mark">JN</span><span>James Notes</span></a><nav class="navlinks" aria-label="主导航"><a href="/">文章</a><a href="https://github.com/James-Chi-Jie" target="_blank" rel="noreferrer">GitHub ↗</a></nav></div></header><main class="main"><div class="shell"><a class="back" href="/">← 所有文章</a><header class="article-header"><div class="meta"><span>AI &amp; Agent</span><time datetime="2026-11-01">2026-11-01</time></div><h1>模型参数究竟是什么？一次预测错误如何变成学习？</h1><p>通过两个可核算的小实验，理解模型参数、Loss、梯度、学习率与反向传播，并区分 LLM 的训练与推理。</p></header><div class="paper"><article class="prose"><p>在<a href="../01-tokenization/index.md">上一篇文章</a>里，我们讨论了 Tokenization：一段文字会被切分成 Token，再转换成一串 Token ID。Token ID 本身只是编号，并不直接表示语义。</p>
+<p>例如，面对「苹果是一种……」和「汽车是一种……」，模型应该给出不同的后续预测。但 Token ID 只是编号，ID 的大小和相邻关系并不代表语义。模型究竟依据什么产生不同的预测？</p>
+<p>模型之所以能根据不同上下文产生不同预测，是输入表示与模型内部计算共同作用的结果。其中一项关键因素，就是一组参与计算、并能在训练中不断调整的数值——<strong>模型参数</strong>。这篇文章先用两个可核算的小实验，拆开看参数怎样影响预测，又怎样通过训练逐渐调整。至于 Token ID 怎样变成模型能够处理的向量，我们留到下一篇解释。</p>
+<h2>一、先分清：输入和参数不是一回事</h2>
+<p>先看一个最简单的计算模型：</p>
+<pre><code class="language-math">\hat y=wx
+</code></pre>
+<p>它只有一个可以调整的参数：$w$。</p>
+<ul>
+<li>$x$ 是输入。每来一条新样本，输入值都可能不同。</li>
+<li>$w$ 是参数。它属于模型，会被多条样本共同使用，并在训练过程中调整。</li>
+</ul>
+<p>在同一次计算中，所有样本使用的是同一个 $w$，所以它确实是一个共享数值；但它不是永远不变的常量。每完成一次训练更新，模型都可能得到一个新的 $w$。</p>
+<p>这里的 $w$ 只是一个最简单的标量参数。真实神经网络通常有大量参数，它们可以组织成向量、矩阵等形式；权重、偏置，以及 Embedding 表中的数值，都可能是模型参数。为了先看清参数如何影响计算，这个例子暂时只保留 $w$，省略偏置项。</p>
+<p>假设我们准备了三条训练数据：</p>
+<table>
+<thead>
+<tr>
+<th>样本</th>
+<th align="right">输入 x</th>
+<th align="right">目标结果 y</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td align="right">2</td>
+<td align="right">6</td>
+</tr>
+<tr>
+<td>B</td>
+<td align="right">3</td>
+<td align="right">9</td>
+</tr>
+<tr>
+<td>C</td>
+<td align="right">4</td>
+<td align="right">12</td>
+</tr>
+</tbody></table>
+<p>这里的输入和目标结果是实验设计者手工构造的。它们恰好符合 $y=3x$，但训练程序并没有被告知正确参数是 3；程序只拿到了三组输入与目标结果。</p>
+<p>注意，这里的 $x$ 是为了演示计算而设计的数值特征，<strong>不是把 Token ID 直接当成可以做加减乘的连续数值</strong>。Token ID 如何变成模型实际处理的向量，留到下一篇再展开。</p>
+<p>现在让模型从 $w=0$ 开始：</p>
+<table>
+<thead>
+<tr>
+<th>样本</th>
+<th align="right">输入 x</th>
+<th align="right">目标结果 y</th>
+<th align="right">当前预测</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td align="right">2</td>
+<td align="right">6</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td>B</td>
+<td align="right">3</td>
+<td align="right">9</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td>C</td>
+<td align="right">4</td>
+<td align="right">12</td>
+<td align="right">0</td>
+</tr>
+</tbody></table>
+<p>三个预测结果都是 0，显然不符合目标。模型怎样知道自己预测得有多差？又该怎样调整 $w$？</p>
+<h2>二、预测错了，怎样衡量？</h2>
+<p>我们先需要一个标准，把预测结果和目标结果之间的差异变成一个可以计算的数值。</p>
+<p>在这个实验里，我们使用<strong>均方误差</strong>（Mean Squared Error，MSE）：</p>
+<pre><code class="language-math">Loss=\frac{(\hat y_1-y_1)^2+(\hat y_2-y_2)^2+(\hat y_3-y_3)^2}{3}
+</code></pre>
+<p>把刚才的三个预测代进去：</p>
+<pre><code class="language-math">Loss=\frac{(0-6)^2+(0-9)^2+(0-12)^2}{3}=87
+</code></pre>
+<p>这个 87，就是模型在当前参数 $w=0$ 下的 Loss。</p>
+<p>可以先把它理解为：<strong>当前这组参数产生的预测，整体上要付出多大的错误代价。</strong></p>
+<p>接下来，如果模型调整了参数，我们就可以重新计算预测和 Loss，看看结果有没有改善。</p>
+<p>这里要注意：Loss 只告诉我们当前预测表现如何。单看 87 这个数字，并不能直接知道 $w$ 应该增大还是减小。我们还需要另一个信息。</p>
+<h2>三、怎样知道参数应该往哪边调整？</h2>
+<p>假设现在的参数是 $w=0$，我们想知道：如果把它稍微调大一点，Loss 会怎样变化？</p>
+<p>可以尝试几个不同的 $w$，观察 Loss。如果 $w$ 稍微增加，Loss 下降，说明当前方向有帮助；如果 Loss 上升，说明当前方向不合适。</p>
+<p>在实际模型中，参数可能有成千上万甚至更多。逐个尝试不同参数组合，成本太高。因此，我们需要一种方法，直接计算 Loss 在当前参数位置附近，对参数变化有多敏感。</p>
+<p>这个信息叫作<strong>梯度</strong>（Gradient）。</p>
+<p>在只有一个参数的当前实验里，梯度就是 Loss 对 $w$ 的变化率。它的正负可以告诉我们局部应该往哪个方向调整：</p>
+<ul>
+<li>梯度为负：在当前位置附近，增大 $w$ 会让 Loss 下降。</li>
+<li>梯度为正：在当前位置附近，减小 $w$ 会让 Loss 下降。</li>
+</ul>
+<p>当 $w=0$ 时，我们计算得到的梯度是 <strong>-58</strong>。这个数字不是凭感觉判断出来的，而是把三条样本对 Loss 的影响合在一起计算：</p>
+<pre><code class="language-math">\frac{\partial Loss}{\partial w}=\frac{1}{3}\sum_{i=1}^{3}2(wx_i-y_i)x_i
+</code></pre>
+<p>代入当前的 $w=0$：</p>
+<pre><code class="language-math">\frac{2(0-6)\times2+2(0-9)\times3+2(0-12)\times4}{3}=-58
+</code></pre>
+<p>这说明在当前位置附近，增大 $w$ 会让 Loss 下降。</p>
+<p>但应该增大多少？</p>
+<p>这就轮到<strong>学习率</strong>（Learning Rate）了。它控制每次参数更新的步长。</p>
+<p>最简单的梯度下降更新公式是：</p>
+<pre><code class="language-math">w_{\text{new}}=w_{\text{old}}-\eta\frac{\partial Loss}{\partial w}
+</code></pre>
+<p>其中 $\eta$ 就是学习率。它控制每次参数更新的步长。学习率不是模型从训练样本中学出来的参数，而是训练过程设置和调整的超参数；实际训练中也可能按预先设定的策略动态变化。假设学习率取 0.01：</p>
+<pre><code class="language-math">w_{\text{new}}=0-0.01\times(-58)=0.58
+</code></pre>
+<p>于是，参数从 0 变成了 0.58。再用新参数重新预测：</p>
+<table>
+<thead>
+<tr>
+<th>样本</th>
+<th align="right">输入 x</th>
+<th align="right">目标结果 y</th>
+<th align="right">新预测</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td align="right">2</td>
+<td align="right">6</td>
+<td align="right">1.16</td>
+</tr>
+<tr>
+<td>B</td>
+<td align="right">3</td>
+<td align="right">9</td>
+<td align="right">1.74</td>
+</tr>
+<tr>
+<td>C</td>
+<td align="right">4</td>
+<td align="right">12</td>
+<td align="right">2.32</td>
+</tr>
+</tbody></table>
+<p>重新计算后，Loss 从 87 降到了 <strong>56.6119</strong>。</p>
+<p>这就是一次完整的参数更新：</p>
+<p><strong>模型先做预测，再计算 Loss；根据梯度确定调整方向，学习率决定调整步长；参数变化后，再用新参数进行预测。</strong></p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/parameters-training/v01/850116308c882488a2e1a18d7a9d6a75133355e1425cb3dfe48aed720ae2b1b2/parameter-update.png" alt="参数更新闭环"></p>
+<p><em>参数更新闭环：Loss 衡量当前预测，梯度给出局部调整方向，学习率决定步长；参数更新后再重新预测。</em></p>
+<h2>四、为什么不是每次更新都一定变好？</h2>
+<p>刚才我们使用的学习率是 0.01。如果学习率换成其他数值，会发生什么？</p>
+<p>我们实际运行了三组对照：</p>
+<table>
+<thead>
+<tr>
+<th align="right">学习率</th>
+<th align="right">训练 Step</th>
+<th align="right">最终参数 w</th>
+<th align="right">最终 Loss</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">0.01</td>
+<td align="right">100</td>
+<td align="right">约 3.000000</td>
+<td align="right">小于 1e-10</td>
+<td>逐步收敛</td>
+</tr>
+<tr>
+<td align="right">0.05</td>
+<td align="right">20</td>
+<td align="right">约 3.000000</td>
+<td align="right">小于 1e-10</td>
+<td>更快收敛</td>
+</tr>
+<tr>
+<td align="right">0.12</td>
+<td align="right">20</td>
+<td align="right">约 -770.748605</td>
+<td align="right">约 5,787,306.73</td>
+<td>发散</td>
+</tr>
+</tbody></table>
+<p>为什么学习率太大，反而会出问题？</p>
+<p>梯度告诉我们当前位置附近应该往哪个方向走，但它描述的是<strong>当前位置附近的变化趋势</strong>，并不保证走得越远越好。</p>
+<p>在学习率为 0.12 时，第一次更新就把 $w$ 从 0 推到了 6.96，Loss 不但没有下降，反而从 87 增加到了 151.5888。后续更新继续越过合适的位置，最终发散。</p>
+<p>所以，学习率不是越大越好，也不是越小越好。它需要结合模型、数据和优化过程选择。</p>
+<p>还有一个细节：上面的每一步更新，都使用了三条训练样本共同计算 Loss 和梯度。这样的方式叫作<strong>全批次梯度下降</strong>（Full-batch Gradient Descent）。真实训练中，通常会把数据分成批次来计算和更新，而不是每次都把全部训练数据放进来。</p>
+<p>到这里，我们已经看到：即使模型只有一个参数，也可以通过反复预测、计算 Loss 和更新参数，逐渐学到训练数据中的规律。</p>
+<p>但一个参数能表达的关系毕竟有限。如果输入里有不止一种信息，模型是不是需要更多参数？</p>
+<h2>五、增加参数，模型就能区分更多输入吗？</h2>
+<p>这次我们把输入扩展成两个数值特征：$x_1$ 和 $x_2$。</p>
+<p>它们只是实验中人为提供的两个独立输入维度，不代表真实苹果、汽车的语义特征。</p>
+<p>训练数据如下：</p>
+<table>
+<thead>
+<tr>
+<th>样本</th>
+<th align="right">x1</th>
+<th align="right">x2</th>
+<th align="right">目标结果 y</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td align="right">1</td>
+<td align="right">0</td>
+<td align="right">2</td>
+</tr>
+<tr>
+<td>B</td>
+<td align="right">0</td>
+<td align="right">1</td>
+<td align="right">3</td>
+</tr>
+<tr>
+<td>C</td>
+<td align="right">1</td>
+<td align="right">1</td>
+<td align="right">5</td>
+</tr>
+</tbody></table>
+<p>我们先看一个受限的模型：</p>
+<pre><code class="language-math">\hat y=w(x_1+x_2)
+</code></pre>
+<p>它先把两个输入相加，再乘以同一个参数 $w$。</p>
+<p>于是：</p>
+<ul>
+<li>样本 A 的输入是 (1, 0)，相加得到 1。</li>
+<li>样本 B 的输入是 (0, 1)，相加也得到 1。</li>
+<li>样本 C 的输入是 (1, 1)，相加得到 2。</li>
+</ul>
+<p>问题出现了：A 和 B 原本是两种不同的输入，但在进入参数计算之前，就已经被合并成了相同的数值。</p>
+<p>因此，无论 $w$ 怎么调整，A 和 B 都只能得到相同的预测。</p>
+<p>我们用全批次 MSE、学习率 0.2 训练 40 Step 后，模型收敛到 $w\approx2.5$：</p>
+<table>
+<thead>
+<tr>
+<th>样本</th>
+<th align="right">预测结果</th>
+<th align="right">目标结果</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td align="right">2.5</td>
+<td align="right">2</td>
+</tr>
+<tr>
+<td>B</td>
+<td align="right">2.5</td>
+<td align="right">3</td>
+</tr>
+<tr>
+<td>C</td>
+<td align="right">5</td>
+<td align="right">5</td>
+</tr>
+</tbody></table>
+<p>模型已经把 Loss 降到了它所能达到的最低点，约为 <strong>0.1667</strong>，但 A 和 B 仍然不能同时预测正确。</p>
+<p>这不是训练次数不够，而是模型的计算方式限制了它：两个输入维度被提前合并，模型无法分别调整它们的影响。</p>
+<p>现在，我们改变一下模型：</p>
+<pre><code class="language-math">\hat y=w_1x_1+w_2x_2
+</code></pre>
+<p>不再让两个输入共用同一个权重，而是让它们分别拥有可以学习的参数：</p>
+<ul>
+<li>$w_1$ 负责调节 $x_1$ 对结果的影响。</li>
+<li>$w_2$ 负责调节 $x_2$ 对结果的影响。</li>
+</ul>
+<p>训练开始时，两个参数都是 0。我们仍使用全批次 MSE 和 0.2 的学习率，每一步都用三条样本共同计算梯度，再分别更新两个参数：</p>
+<table>
+<thead>
+<tr>
+<th align="right">Step</th>
+<th align="right">w1</th>
+<th align="right">w2</th>
+<th align="right">Loss</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right">0</td>
+<td align="right">12.6667</td>
+</tr>
+<tr>
+<td align="right">1</td>
+<td align="right">0.9333</td>
+<td align="right">1.0667</td>
+<td align="right">4.6252</td>
+</tr>
+<tr>
+<td align="right">5</td>
+<td align="right">2.0501</td>
+<td align="right">2.5611</td>
+<td align="right">0.1154</td>
+</tr>
+<tr>
+<td align="right">10</td>
+<td align="right">2.1044</td>
+<td align="right">2.8653</td>
+<td align="right">0.0100</td>
+</tr>
+<tr>
+<td align="right">40</td>
+<td align="right">2.0016</td>
+<td align="right">2.9984</td>
+<td align="right">约 0.00000178</td>
+</tr>
+<tr>
+<td align="right">120</td>
+<td align="right">2.0000</td>
+<td align="right">3.0000</td>
+<td align="right">约 2.02e-16</td>
+</tr>
+</tbody></table>
+<p>最后，两个参数分别接近 2 和 3：</p>
+<pre><code class="language-math">w_1\approx2,\quad w_2\approx3
+</code></pre>
+<p>再代回三个样本：</p>
+<ul>
+<li>A：$2\times1+3\times0=2$</li>
+<li>B：$2\times0+3\times1=3$</li>
+<li>C：$2\times1+3\times1=5$</li>
+</ul>
+<p>三个预测都接近目标结果，Loss 也接近 0。</p>
+<p>注意，表格中的 Step 只是展示各自的收敛过程：共享权重模型训练 40 Step，独立权重模型训练 120 Step。这不是训练速度对比；我们真正要比较的是，两种计算结构能否表达不同的输入—输出关系。</p>
+<p>这两个模型都是刻意简化的线性模型，没有隐藏层或非线性激活。我们只改变输入与权重的连接方式，是为了单独看清参数自由度的作用；它们并不是完整神经网络，更不是 LLM 的结构复刻。</p>
+<p>这里有一个重要的区别：这次实验改变的不只是参数数量，还改变了参数与输入之间的连接方式。两个独立参数让模型有了分别处理两个输入维度的自由度。</p>
+<p>但这不代表参数越多，模型效果就一定越好。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/parameters-training/v01/dc59bea7dde5d4b4333de9daf4b77ceb6a3f7001b6c3aadebf32478be0d26996/shared-vs-independent-weights.png" alt="共享权重与独立权重"></p>
+<p><em>共享权重会合并不同输入维度的影响；独立权重允许模型分别调整各维度的作用。</em></p>
+<p>如果两个不同样本提供给模型的<strong>完整输入完全相同</strong>，那么在相同参数和确定性计算下，模型也只能得到相同的预测。即使增加更多参数，也不能凭空知道两个样本其实是不同对象。</p>
+<p>例如，两个样本的输入都是 (1, 0)，但目标结果分别是 2 和 3。模型没有任何输入信息可以判断当前面对的是哪一个样本，因此无法同时给出两个不同结果。即使把共同预测调到最合适的 2.5，这两条样本的平均 MSE 仍然是 0.25，而不是 0。如果后续使用随机采样，最终选出的 Token 可能因随机性不同，但模型给出的概率分布仍然相同；这不是模型从输入中识别出了两个对象的差异。</p>
+<p>还有一种情况：如果 $x_1$ 和 $x_2$ 在所有训练样本中始终相等，那么模型也无法从这些数据中分别识别两个权重的作用。因为：</p>
+<pre><code class="language-math">w_1x_1+w_2x_2=(w_1+w_2)x_1
+</code></pre>
+<p>这时，数据实际上只能约束 $w_1+w_2$ 的总和，无法判断这两个参数各自应该是多少。这也解释了为什么我们不能只看模型有多少参数，还要看输入数据提供了什么信息，以及模型结构能否利用这些信息。</p>
+<p><strong>输入特征提供样本的信息，参数决定模型如何处理这些信息；参数数量和连接方式，则影响模型能够表达多复杂的映射。</strong></p>
+<h2>六、反向传播：一个 Loss 怎样影响前面的参数？</h2>
+<p>到目前为止，我们已经用过好几次梯度：实验一算出了 $-58$，实验二让两个参数分别根据自己的梯度更新。</p>
+<p>但是，这里还有一个尚未回答的问题：<strong>Loss 是最后才算出来的，模型怎么知道更早参与计算的参数应该怎样变化？</strong></p>
+<p>先回到实验一。为了看清计算过程，我们暂时只取第一条样本：输入 $x=2$、目标 $y=6$、参数 $w=0$。</p>
+<p>模型先从输入走向输出：</p>
+<pre><code class="language-math">x=2,\quad \hat y=wx=0,\quad \ell=(\hat y-6)^2=36
+</code></pre>
+<p>这叫作<strong>前向计算</strong>：用当前参数产生预测，再得到这条样本的损失。</p>
+<p>现在我们已经知道损失是 36，但单看这个数字，仍然不知道怎样调整 $w$。因为 $w$ 并不直接出现在损失的最后一步里；它是先影响预测值 $\hat y$，再间接影响损失。</p>
+<p>因此，我们可以反过来沿着这条计算关系求变化率。</p>
+<p>首先，假设预测值 $\hat y$ 发生一点变化，损失会如何变化？</p>
+<pre><code class="language-math">\frac{\partial \ell}{\partial \hat y} =2(\hat y-y)=2(0-6)=-12
+</code></pre>
+<p>然后再问：参数 $w$ 发生一点变化，预测值又会变化多少？</p>
+<pre><code class="language-math">\frac{\partial \hat y}{\partial w}=x=2
+</code></pre>
+<p>把这两个关系接起来，就知道参数 $w$ 对损失的影响：</p>
+<pre><code class="language-math">\frac{\partial \ell}{\partial w} =\frac{\partial \ell}{\partial \hat y} \times\frac{\partial \hat y}{\partial w} =(-12)\times2=-24
+</code></pre>
+<p>这里用到的，就是微积分里的<strong>链式法则</strong>：当一个量通过中间结果影响另一个量时，可以把每一段的局部变化率连接起来。</p>
+<p>其余两条样本也沿相同的计算关系求导，分别得到 $-54$ 和 $-96$。三条样本的平均梯度为：</p>
+<pre><code class="language-math">\frac{-24-54-96}{3}=-58
+</code></pre>
+<p>这正是实验一第一次更新参数时用到的梯度。</p>
+<p>你可以把刚才的计算理解成两条方向相反的信息流：</p>
+<ul>
+<li><strong>前向</strong>：输入和参数 → 预测值 → Loss。</li>
+<li><strong>反向</strong>：从 Loss 出发，利用各步的局部导数，逐步算出 Loss 对前面参数的梯度。</li>
+</ul>
+<p>为什么要按照这个方向算？因为只有先得到最终的 Loss，才能知道我们究竟要衡量哪一个结果的变化；而模型的前面可能有很多层，每层都通过中间结果间接影响它。</p>
+<p>真实神经网络的计算路径会更长。假设某个参数 <code>w₁</code> 先影响中间结果 <code>h</code>，这个中间结果再影响预测值 <code>ŷ</code>，而预测值最后决定 Loss。在标量形式的简化示意里：</p>
+<pre><code class="language-math">\frac{\partial Loss}{\partial w_1} = \frac{\partial Loss}{\partial \hat y} \times \frac{\partial \hat y}{\partial h} \times \frac{\partial h}{\partial w_1}
+</code></pre>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/parameters-training/v01/ad6a0ad9d34a4182e4b154e0f7e56a63b471f7359722d94486f4189f25b832ad/chain-rule-backpropagation.png" alt="链式法则与反向传播"></p>
+<p><em>反向传播沿计算路径反向连接局部变化率，计算 Loss 对参数的梯度；参数更新由优化器完成。</em></p>
+<p>层数越多，就需要沿着更多计算关系继续传递。实际神经网络还涉及向量、矩阵和分支，梯度在分支处也需要汇总。**反向传播（Backpropagation）**就是沿计算图高效地反向应用链式法则，并复用中间梯度，计算出各个可学习参数的梯度。</p>
+<p>注意，反向传播<strong>还没有改变任何参数</strong>。它的输出是各个参数的梯度；接下来才由优化器利用这些梯度和学习率等信息更新参数。然后模型才能用更新后的参数重新前向预测。</p>
+<p>我们的两个 Python 实验直接手写了梯度公式，并没有实现通用的自动求导引擎。它们验证了梯度和参数更新，但不能因此声称已经训练了一套多层神经网络。这里使用实验一的手算，是为了把反向传播背后的链式关系看清楚。</p>
+<h2>七、回到 LLM：模型怎样学习预测下一个 Token？</h2>
+<p>前面两个实验使用的都是非常简单的线性模型。</p>
+<p>实验一用一个参数学习 $x$ 和 $y$ 之间的关系；实验二用两个独立参数分别处理两个输入特征。</p>
+<p>真实的 LLM 要处理的输入远比这复杂。它接收的是 Token 序列，内部有大量参数，经过多层计算后，需要预测词表中下一个 Token。</p>
+<p>不过，训练的基本逻辑并没有改变：</p>
+<p><strong>先预测，再和已知目标比较，计算 Loss，然后根据梯度更新参数。</strong></p>
+<p>以典型的自回归语言模型为例。训练数据中有一段 Token 序列。对于其中一个预测位置，模型根据当前位置之前的上下文预测下一个 Token；训练数据中真实出现的下一个 Token，则作为这一位置的目标。这里的“知道目标”是训练流程拿它来计算 Loss，并不是把未来 Token 提前提供给模型作为当前预测的输入。</p>
+<p>模型根据当前上下文，为词表里的每个 Token 计算一个分数。这些还没有转换成概率的分数叫作 <strong>logits</strong>。概念上，经过 Softmax 转换后，就能得到各个 Token 的预测概率。</p>
+<p>训练数据告诉我们，这个位置真实出现的下一个 Token 是什么。于是，我们可以检查模型给这个正确 Token 分配了多大的概率。</p>
+<p>这里使用的损失函数通常是交叉熵（Cross Entropy）。<strong>不要把前面线性回归实验中的 MSE 当成 LLM 的标准训练损失</strong>：MSE 只是为了让参数更新更容易手算；自回归语言模型通常使用交叉熵来评价真实下一个 Token 在当前上下文下的预测概率。对于一个预测位置，它对应的损失可以写成：</p>
+<pre><code class="language-math">Loss=-\ln(P(\text{正确 Token}\mid\text{当前上下文}))
+</code></pre>
+<p>假设模型给真实下一个 Token 的预测概率分别是：</p>
+<table>
+<thead>
+<tr>
+<th align="right">正确 Token 的预测概率</th>
+<th align="right">对应的 Loss</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">0.5</td>
+<td align="right">约 0.693</td>
+</tr>
+<tr>
+<td align="right">0.9</td>
+<td align="right">约 0.105</td>
+</tr>
+</tbody></table>
+<p>可以看到，模型给正确 Token 的概率越高，这个位置对应的 Loss 就越低。真实训练会在大量样本的多个预测位置上计算这样的损失，再汇总成训练目标。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/parameters-training/v01/760dffb460e9d32a1b825ad3aa6dfc5baa5d2d961fe2cddf1afb1908213174fb/next-token-cross-entropy.png" alt="下一 Token 的交叉熵"></p>
+<p><em>交叉熵根据真实目标 Token 的预测概率，衡量当前预测的损失。</em></p>
+<p>有了上一节的反向传播，我们就能把这次交叉熵 Loss 沿着实际模型的计算图往回求导，得到各个参数的梯度。**优化器（Optimizer）**随后根据梯度和学习率等设置更新参数。</p>
+<p>前面的实验使用 MSE，语言模型主要使用下一 Token 的交叉熵；损失函数虽然不同，但「前向预测 → 根据目标计算 Loss → 反向计算梯度 → 优化器更新参数」的学习机制是一致的。真实 LLM 的计算图远比线性实验复杂，所以需要高效的反向传播，而不是逐个参数重新推导整条计算路径。</p>
+<p>实际训练框架通常会直接从 logits 计算数值稳定的交叉熵，不一定先单独保存一整张概率表。</p>
+<h2>八、训练和回答问题，是同一个过程吗？</h2>
+<p>现在还剩下一个容易混淆的问题：</p>
+<p>既然在训练阶段，模型做出预测后会计算 Loss 并更新参数，那我们平时每调用一次 LLM API，模型是不是也会学习一次？</p>
+<p>不是。</p>
+<p><strong>训练和推理是两个不同的过程。</strong></p>
+<p>在训练阶段，模型拿到训练样本，也知道真实的下一个 Token 是什么。它可以计算 Loss、通过反向传播得到梯度，再由优化器更新参数。</p>
+<p>而在普通推理阶段，模型拿到的是用户当前的输入。它需要根据已经训练好的参数进行计算，预测下一个 Token，并逐步生成回答。</p>
+<p>这时没有供模型对照的真实答案，也不会因为用户问了一个问题，就自动执行一次反向传播和参数更新。</p>
+<p>可以把两者放在一起看：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>训练（Training）</th>
+<th>推理（Inference）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>输入</td>
+<td>训练样本</td>
+<td>用户提供的上下文</td>
+</tr>
+<tr>
+<td>是否有已知目标</td>
+<td>有真实的下一个 Token</td>
+<td>通常没有</td>
+</tr>
+<tr>
+<td>是否计算训练 Loss</td>
+<td>是</td>
+<td>普通生成时不需要</td>
+</tr>
+<tr>
+<td>是否计算梯度</td>
+<td>是</td>
+<td>普通生成时不需要</td>
+</tr>
+<tr>
+<td>是否更新模型参数</td>
+<td>是</td>
+<td>否</td>
+</tr>
+<tr>
+<td>主要目的</td>
+<td>从数据中学习参数</td>
+<td>使用已有参数生成结果</td>
+</tr>
+</tbody></table>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/parameters-training/v01/d7c981f0628940b16daa9c7047617141fd21376499487187823333fddaf0c9f8/training-vs-inference.png" alt="训练与推理的区别"></p>
+<p><em>训练阶段通过 Loss、反向传播和优化器更新参数；普通推理阶段使用已训练参数生成回答。</em></p>
+<p>因此，我们平时调用模型 API，实际上是在使用已经训练好的参数，而不是每次提问都重新训练模型。服务端可能会记录请求、更新其他系统状态，模型提供方也可能在独立流程中继续训练或更新模型，但这些都不等于当前这次普通推理请求正在修改模型参数。</p>
+<h2>回到最初的问题</h2>
+<p>现在再回头看 Token ID。</p>
+<p>它只是一个编号，不能直接告诉模型这个 Token 的语义。但模型拥有一套从训练数据中逐步调整出来的参数，可以利用输入信息进行计算，并通过训练过程改善预测。</p>
+<p>参数不是一张张对应着词语和事实的卡片，也不是每个样本单独携带的信息。它们是模型内部一组可学习的数值配置，决定了模型怎样处理输入、怎样产生预测。</p>
+<p>我们已经知道参数为什么需要学习，以及预测错误怎样转化为参数更新。</p>
+<p>但最初的问题还没有完全解决：<strong>Token ID 只是编号，它究竟怎样变成模型能够处理的输入信息？</strong></p>
+<p>下一篇，我们就从 Embedding 开始，看看模型怎样通过 Token ID 找到对应的向量，以及为什么常见语言模型中的 Token Embedding 向量本身也是可学习参数。</p>
+</article></div><div class="ending"><a href="/">← 返回文章列表</a></div></div></main><footer class="footer"><div class="shell footer-row"><span>© 2026 James Notes · 保持好奇，持续验证</span><span>Built with Astro · Published from Git</span></div></footer></body></html>
