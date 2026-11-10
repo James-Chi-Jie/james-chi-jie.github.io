@@ -1,0 +1,373 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="从文字、Token ID 与 Embedding 向量出发，通过固定输入的对照实验，解释 Attention 如何动态匹配上下文、Q/K/V 的职责以及投影参数如何联合训练。"><link rel="canonical" href="https://james-chi-jie.github.io/articles/embedding-attention/"><meta name="theme-color" content="#f8fafc"><title>从文字到 Attention：模型怎样根据问题找到需要的信息？ · James Notes</title><style>:root{color:#172336;font-synthesis:none;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,SF Pro Text,PingFang SC,Microsoft YaHei,system-ui,sans-serif}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0}a{color:inherit}img{max-width:100%}.shell{max-width:1120px;margin:0 auto;padding:0 28px}.topbar{background:#fff;border-bottom:1px solid #e9edf2}.nav{justify-content:space-between;align-items:center;gap:20px;height:78px;display:flex}.brand{letter-spacing:-.4px;align-items:center;gap:12px;font-size:18px;font-weight:800;text-decoration:none;display:flex}.brand-mark{color:#fff;background:#182e52;border-radius:12px;place-items:center;width:38px;height:38px;font-size:14px;display:grid}.navlinks{color:#526175;align-items:center;gap:24px;font-size:14px;display:flex}.navlinks a{text-decoration:none}.navlinks a:hover{color:#2563eb}.main{min-height:calc(100vh - 174px)}.footer{color:#8390a0;background:#fff;border-top:1px solid #e5eaf0;padding:26px 0;font-size:13px}.footer-row{justify-content:space-between;gap:15px;display:flex}.eyebrow{letter-spacing:2px;color:#346db4;text-transform:uppercase;font-size:12px;font-weight:700}.muted{color:#637287}@media (width<=650px){.shell{padding:0 18px}.nav{height:64px}.navlinks{gap:12px;font-size:13px}.brand{font-size:16px}.footer-row{display:block}}
+</style><link rel="stylesheet" href="/_astro/_slug_.CF63Jl4j.css"></head><body><header class="topbar"><div class="shell nav"><a class="brand" href="/"><span class="brand-mark">JN</span><span>James Notes</span></a><nav class="navlinks" aria-label="主导航"><a href="/">文章</a><a href="https://github.com/James-Chi-Jie" target="_blank" rel="noreferrer">GitHub ↗</a></nav></div></header><main class="main"><div class="shell"><a class="back" href="/">← 所有文章</a><header class="article-header"><div class="meta"><span>AI &amp; Agent</span><time datetime="2026-11-10">2026-11-10</time></div><h1>从文字到 Attention：模型怎样根据问题找到需要的信息？</h1><p>从文字、Token ID 与 Embedding 向量出发，通过固定输入的对照实验，解释 Attention 如何动态匹配上下文、Q/K/V 的职责以及投影参数如何联合训练。</p></header><div class="paper"><article class="prose"><p>小明把钥匙放进书桌抽屉。随后，他去了厨房。</p>
+<p>如果问“钥匙在哪里”，我们会回答“书桌抽屉”；如果问“小明后来去了哪里”，答案变成了“厨房”。</p>
+<p>前文没有变化，改变的只是问题。</p>
+<p>我们可以直接理解这段话。但模型接收到的文本不能直接作为矩阵运算的输入；它需要先得到数值表示，再通过神经网络处理这些信息。</p>
+<p>这就引出了两个问题：</p>
+<p><strong>第一，模型怎样把文字变成可以计算的向量？第二，面对同一段文字，它怎样根据不同的问题，利用需要的信息？</strong></p>
+<p>我们先从第一个问题开始。</p>
+<h2>一、从文字到向量：Embedding 解决了什么问题？</h2>
+<p>神经网络的核心计算建立在数值之上。无论是矩阵乘法，还是后续的特征变换，处理的都是数值数据。</p>
+<p>但我们希望模型处理的内容，可能是文字，也可能是图片、音频或视频。这些数据虽然形式各异，却都能经过适当的表示转换，成为供神经网络使用的向量：</p>
+<table>
+<thead>
+<tr>
+<th>原始数据</th>
+<th>转换方式</th>
+<th>可能得到的表示</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>视频</td>
+<td>视频嵌入模块</td>
+<td>视频特征向量或向量序列</td>
+</tr>
+<tr>
+<td>音频</td>
+<td>音频嵌入模块</td>
+<td>音频特征向量或向量序列</td>
+</tr>
+<tr>
+<td>文字</td>
+<td>文本嵌入模块</td>
+<td>文本、Token 或片段的向量表示</td>
+</tr>
+</tbody></table>
+<p>这类<strong>将输入对象映射到向量表示</strong>的方法，统称为 Embedding（嵌入）。不同数据需要不同的处理方式，并不是把任意输入送进同一张表就能得到有用的向量。</p>
+<p>这里也要区分 Embedding 与数字化：音频和视频在进入模型之前，通常已经是数字采样值或像素数组。Embedding 不只是把原始内容“变成数字”，更重要的是形成模型可以进一步计算和学习的表示。</p>
+<p>这篇文章讨论的是 GPT，所以接下来只关注文本。</p>
+<p>为了建立直觉，假设我们希望把“钥匙”表示成一个二维向量：</p>
+<p><code>钥匙 → [0.2, 0.8]</code></p>
+<p>可以暂时把这个向量想象成二维空间中的一个点。实际大模型通常使用远高于二维的表示。</p>
+<p>但问题来了：<strong>为什么“钥匙”对应 [0.2, 0.8]，而不是 [0.5, 0.1]？</strong></p>
+<p>这些数字并不是人工规定的词义，也没有唯一的正确答案。在 GPT 采用的 Token Embedding 中，词表里的每个 Token 都对应一组可学习的向量参数。参数从初始值出发，通过语言模型的训练逐渐调整，让这些表示对预测有用。</p>
+<p>我们可以借助向量空间建立直觉：有些向量关系可能反映语言中的使用规律。但不能机械地认为距离越近，词义就越相同；也不能把某个维度直接规定为“物品”或“地点”。</p>
+<p>现在知道了 Embedding 要解决什么问题，接着来看 GPT 如何把一个 Token 定位到对应的向量。</p>
+<h2>二、GPT 怎样把 Token 转换成 Embedding 向量？</h2>
+<p>上一篇讲过 Tokenization：Tokenizer 将文本分成 Token，并通过词表给每个 Token 分配一个整数编号，也就是 Token ID。</p>
+<p>仍用开头的例子。为了方便手算，我们暂时把“钥匙”“抽屉”“厨房”各自当作一个 Token。真实 Tokenizer 可能将它们拆成多个 Token。</p>
+<p>假设词表中的编号是：</p>
+<table>
+<thead>
+<tr>
+<th>Token（仅用于教学）</th>
+<th align="right">Token ID</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>钥匙</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td>抽屉</td>
+<td align="right">1</td>
+</tr>
+<tr>
+<td>厨房</td>
+<td align="right">2</td>
+</tr>
+</tbody></table>
+<p>模型还维护着一张 Embedding 参数表：</p>
+<table>
+<thead>
+<tr>
+<th align="right">行号</th>
+<th>Embedding 向量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">0</td>
+<td>[0.2, 0.8]</td>
+</tr>
+<tr>
+<td align="right">1</td>
+<td>[0.5, 0.1]</td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td>[0.4, 0.7]</td>
+</tr>
+</tbody></table>
+<p>当 Tokenizer 把“钥匙”转换成 ID <code>0</code>，Embedding 模块便读取参数表的第 0 行，得到 <code>[0.2, 0.8]</code>；“厨房”的 ID 是 <code>2</code>，就读取第 2 行。</p>
+<p>如果输入的 ID 序列是 <code>[0,1,0]</code>，模型会按顺序取出第 0、1、0 行，形成三个向量，再交给后续网络。</p>
+<p><strong>这就是 GPT 中 Token Embedding 的基本实现：Token ID 负责定位行，Embedding 参数表提供真正用于向量计算的数值。</strong></p>
+<p>从数学上说，这张表是一个“词表大小 × 向量维度”的矩阵。实际模型的词表和向量维度都远大于我们的三行二维示例。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/embedding-attention/v01/1fb05ec8e812e8aa3aa7a8e0ef8ca917fe4a278c712c1e0fcb3c5fa9ececfb42/token-id-embedding-lookup.png" alt="Token ID 定位 Embedding 参数矩阵中的行"></p>
+<h3>为什么不直接使用 Token ID？</h3>
+<p>你可能会问：既然“钥匙”已经变成数字 0，为什么不直接把 0 送入神经网络？</p>
+<p>因为 <strong>ID 只是编号，不是语言特征</strong>。“钥匙”是 0、“抽屉”是 1、“厨房”是 2，并不意味着“厨房”是“抽屉”的两倍，也不能由编号距离判断词语之间的关系。</p>
+<p>如果把这些 ID 直接当作连续数值特征，模型就会接收到人为编号决定的大小和距离。Embedding 则为不同 Token 提供独立、可学习的向量，让模型不必将编号关系当作语言关系。</p>
+<p>两者承担不同职责：</p>
+<ul>
+<li><strong>Token ID 是离散索引</strong>：用于找到参数表中的一行；训练时也可以用作预测目标的类别编号。它不直接参与 Q/K/V 的浮点矩阵乘法。</li>
+<li><strong>Embedding 向量是可学习的数值表示</strong>：是后续 Transformer 向量计算的输入之一。</li>
+</ul>
+<p>这里没有数学上的“必须用整数 ID 才能找到向量”。如果改用字符串 Key 查表，只要取出的是同一个向量，后续神经网络就可以做同样的计算。采用整数索引，主要是为了紧凑地组织 Token 序列、批量读取参数表，以及保持输入与词表预测类别的对应关系。</p>
+<p>词表编号还必须与 Embedding 参数表保持一致。如果训练后改变某个 Token 的 ID，却没有同步调整参数，就可能读到别的 Token 的向量。</p>
+<h3>Embedding 向量是怎么学出来的？</h3>
+<p>上一篇介绍了参数与梯度，这里只回顾关键过程。</p>
+<p>模型初始化时，Embedding 表中的参数并没有人为填写的正确词义。当一个 Token 的向量被读取并参与后续预测时，最终 Loss 的梯度就可能沿计算图传回对应的参数行。训练不断更新这些数值，使它们逐渐成为对预测任务有用的表示。</p>
+<p>到这里，我们完成了第一步：<strong>文本经过 Tokenization 变成 Token ID，再通过 Embedding 查表得到可学习、可计算的向量序列。</strong></p>
+<p>不过，仅靠这一步还不够。</p>
+<p>同一个 Token ID 在同一张参数表中取到的是同一行基础向量。它本身并不知道“钥匙放进书桌抽屉”这件事，更不知道当前问题问的是钥匙的位置，还是小明后来去了哪里。</p>
+<p>另外，模型还需要处理位置信息：例如“钥匙放进抽屉”和“抽屉放进钥匙”，即使包含相同的 Token，排列顺序不同也会改变意思。不同架构可以通过不同机制引入位置相关信息，这里不展开具体实现。</p>
+<p>现在，每个位置都有了数值表示。<strong>接下来怎样让不同位置的信息发生联系，并随当前问题改变信息的使用方式？</strong></p>
+<p>这就引出了 Attention。</p>
+<h2>三、前文有两条线索，模型怎样知道这次应该使用哪条？</h2>
+<p>还是这段话：</p>
+<blockquote>
+<p>小明把钥匙放进书桌抽屉。随后，他去了厨房。</p>
+</blockquote>
+<p>我们可以把当前任务想象成：有几处信息可供使用，模型需要根据当前位置的输入，决定从哪些位置获取多少信息。</p>
+<p>如果只是把前文向量固定比例地汇总，例如一律平均，就无法在<strong>这一步汇总运算中</strong>根据不同问题调整各位置的贡献。固定平均并非完全不能表示上下文；它只是一个直观对照，并不说明所有不使用 Attention 的模型都无法回答问题。</p>
+<p>我们希望出现一种更灵活的计算方式：</p>
+<p><strong>由当前位置的表示决定对前文各位置分配多少权重，再按权重汇总这些位置提供的信息。</strong></p>
+<p>Self-Attention 提供了这种机制。它让一个位置可以直接与允许访问的其他位置计算匹配分数，而不必让相关信息必须通过逐步更新的循环隐藏状态才能到达当前查询位置。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/embedding-attention/v01/56a637520edba3a82b79205a38b18ca3e74ca16fc07cebfd97087c0934dd42a4/query-dependent-attention.png" alt="同一前文面对不同 Query 时的 Attention 权重"></p>
+<p>不过，说“计算匹配”还不够具体。究竟比较什么？匹配完又把什么带回来？</p>
+<h2>四、为什么会有 Q、K、V？三个矩阵是怎么设计出来的？</h2>
+<p>前面我们希望模型根据当前需要，从同一段文字中获取不同的信息：</p>
+<blockquote>
+<p>小明把钥匙放进书桌抽屉。随后，他去了厨房。</p>
+</blockquote>
+<p>问钥匙的位置，需要利用“书桌抽屉”的线索；问小明后来去了哪里，需要利用“厨房”的线索。模型最初并没有一张人工维护的“钥匙位置表”，只有各个 Token 位置的数值表示。</p>
+<h3>先交代 Q、K、V 这套说法从哪里来</h3>
+<p>这里出现的 Query、Key、Value，不是我们为了讲故事临时起的三个名字。2017 年的 Transformer 论文《<a href="https://arxiv.org/abs/1706.03762">Attention Is All You Need</a>》在第 3.2 节中，用这三个角色来描述 Attention：给定一个 Query 和一组 Key-Value，先根据 Query 与各个 Key 的匹配程度计算权重，再用这些权重对对应的 Value 加权求和。</p>
+<p>不过，<strong>Attention 的思想早于 Transformer</strong>。例如，2014 年 Bahdanau 等人的工作已经让 Decoder 根据当前状态，计算它与 Encoder 各个位置表示的相关程度，再把这些位置表示按权重汇总成 Context。用后来 Transformer 的 Q/K/V 术语回看：Decoder 当前状态承担了类似 Query 的作用；Encoder 的位置表示既参与匹配，也作为被汇总的内容，尚未像 Transformer 的多头注意力那样分成独立的 Key、Value 投影。</p>
+<p>所以需要区分两件事：<strong>Transformer 论文在第 3.2 节明确采用了 Q/K/V 这套 Attention 抽象；第 3.2.2 节进一步介绍了为多头注意力使用不同的可学习线性投影。它不是 Attention 思想的起点，而是把已有的注意力机制组织成一种新的架构。</strong></p>
+<p>接下来，我们不只记住这三个术语，而是从刚才的例子出发，理解为什么这三种职责值得区分。</p>
+<p>一种可行的设计是：让当前位置的向量与其他允许访问的位置直接比较，按照比较得出的分数分配权重，再汇总它们的向量。<strong>这已经是一种 Attention，并不是没有三个独立矩阵就无法计算。</strong></p>
+<p>但这留下了一个设计选择：<strong>拿来判断位置是否相关的表示，是否必须和最终传递出去的表示完全相同？</strong></p>
+<h3>先让模型学习“怎样匹配”</h3>
+<p>对当前位置而言，匹配包含两个角色：它拿什么特征去寻找信息，以及其他位置用什么特征供它比较。</p>
+<p>我们可以直接用原始向量计算相似度。但那意味着，匹配方式受当前这组原始向量特征的限制。如果当前表示更接近一个不那么有用的位置，直接比较也可能把较高权重分给那里。</p>
+<p>另一种选择是：允许模型在比较之前，先分别加工这两侧的特征。</p>
+<p>在 Transformer 采用的这套 Attention 描述中，这两个角色分别称为 <strong>Query（Q）</strong> 和 <strong>Key（K）</strong>：</p>
+<ul>
+<li>Q：当前位置用于发起匹配的向量。</li>
+<li>K：候选位置提供出来、用于接受匹配的向量。</li>
+</ul>
+<p>它们不是人工填写的“问题字段”和“关键词字段”。在 Self-Attention 中，每个 Token 位置都能根据自己的当前输入表示产生 Q、K。模型通过训练学习什么样的变换对最终预测有帮助。</p>
+<h3>匹配到信息，还要决定传递什么</h3>
+<p>Q 和 K 计算出来的权重，只决定各位置对当前结果贡献多少。</p>
+<p>至于这些位置究竟贡献什么数值，我们可以直接汇总原始向量；也可以让每个位置再经过一组独立的可学习变换，生成专门用于汇总的内容表示。</p>
+<p>在这套描述中，这类被加权汇总的内容向量称为 <strong>Value（V）</strong>。</p>
+<p>到这里，两件事分开了：<strong>Q/K 负责计算匹配权重，V 提供被加权汇总的数值内容。</strong> 一个位置可以向多个位置分配权重，并不等于从某个“记录”里直接取出中文答案。</p>
+<h3>三个矩阵由架构定义，数值由训练学习</h3>
+<p>模型每个位置原本只有输入向量。在 Transformer 的多头注意力中，每个注意力头会用各自的三组可学习线性投影，从输入表示生成 Q、K、V：</p>
+<span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>Q</mi><mo>=</mo><mi>X</mi><msub><mi>W</mi><mi>Q</mi></msub><mo separator="true">,</mo><mspace width="2em"/><mi>K</mi><mo>=</mo><mi>X</mi><msub><mi>W</mi><mi>K</mi></msub><mo separator="true">,</mo><mspace width="2em"/><mi>V</mi><mo>=</mo><mi>X</mi><msub><mi>W</mi><mi>V</mi></msub></mrow><annotation encoding="application/x-tex">Q=XW_Q,\qquad K=XW_K,\qquad V=XW_V</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="katex-base"><span class="katex-strut" style="height:0.8778em;vertical-align:-0.1944em;"></span><span class="mord mathnormal">Q</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.9694em;vertical-align:-0.2861em;"></span><span class="mord mathnormal" style="margin-right:0.0785em;">X</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.1389em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">Q</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.2861em;"><span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:2em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.0715em;">K</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.8778em;vertical-align:-0.1944em;"></span><span class="mord mathnormal" style="margin-right:0.0785em;">X</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.1389em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.0715em;">K</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:2em;"></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.2222em;">V</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord mathnormal" style="margin-right:0.0785em;">X</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.1389em;">W</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.1389em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.2222em;">V</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span></span></span>
+<p>这里要分清两个层次：</p>
+<ul>
+<li><strong>WQ、WK、WV 是模型的参数矩阵</strong>。由架构预先规定放在哪条计算路径上，开始训练前就有初始值。</li>
+<li><strong>Q、K、V 是本次输入产生的中间结果</strong>。输入或参数发生变化，它们也可能变化。</li>
+</ul>
+<p>模型不会看三个矩阵中的随机数来判断谁是 Q、谁是 K：<strong>它们的职责在程序里已经定义好了，Loss 只帮助调整这些矩阵的数值。</strong></p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/embedding-attention/v01/fa4353b31d864b418e8d3faa8131d0305fa36b4236c042b28b686016049be251/qkv-projection-flow.png" alt="Q、K、V 的可学习投影与匹配汇总路径"></p>
+<p>这不是唯一可行的参数化方法。2017 年 Transformer 论文采用不同的可学习投影，进一步让多个注意力头在不同表示子空间并行计算。我们这里从实际问题回推设计，是为了理解其取舍，并非声称复现了发明者当年的全部思考过程。</p>
+<p>这个选择真的有用吗？下一节保持同一段前文、同一组输入表示不变，只改变是否使用投影，算出具体差异。</p>
+<h2>五、同一段前文，加上投影矩阵后有什么不同？</h2>
+<p>为了手算，我们继续用两个位置的数值表示来代表故事中的两条线索：</p>
+<table>
+<thead>
+<tr>
+<th>位置</th>
+<th>人类可读的线索</th>
+<th>输入向量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td>钥匙放进书桌抽屉</td>
+<td>[1,0]</td>
+</tr>
+<tr>
+<td>B</td>
+<td>小明后来去了厨房</td>
+<td>[0,1]</td>
+</tr>
+</tbody></table>
+<p><strong>这不是说 Transformer 已经把句子拆成两条数据库记录。</strong> 实际 Attention 在 Token 位置之间计算；这里假设某一层有两个位置的表示分别包含了上述线索，数字仅是人为构造的教学样本。</p>
+<p>对于两个不同的问题，我们也暂时指定当前位置的输入向量：</p>
+<table>
+<thead>
+<tr>
+<th>当前问题</th>
+<th>输入向量 X 的对应行</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>钥匙在哪里？</td>
+<td>[0,2]</td>
+</tr>
+<tr>
+<td>小明后来去了哪里？</td>
+<td>[2,0]</td>
+</tr>
+</tbody></table>
+<p>注意，<strong>这不是模型真实算出来的 Embedding</strong>。我们故意选择了这样一组数值，用来检查“同一份输入，换一种可学习的匹配方式，权重能否变化”。</p>
+<h3>先不使用投影</h3>
+<p>让当前位置的输入向量直接与 A、B 比较，按照二维 Scaled Dot-Product Attention 的规则计算分数，再经 Softmax 转成权重。</p>
+<p>结果发现，在这组特意选择的输入中：</p>
+<ul>
+<li>问钥匙在哪里，B 获得了较高权重。</li>
+<li>问小明后来去了哪里，A 反而获得了较高权重。</li>
+</ul>
+<p><strong>这不代表直接比较一定会错</strong>，只表示这种匹配方式受到当前输入表示的影响。</p>
+<h3>只增加一组匹配变换</h3>
+<p>现在 A、B 和两个问题的输入向量都保持不变。我们给 Query 增加一个人为设定的变换：<strong>把二维向量的第一、第二维交换</strong>。Key 和 Value 暂时不变，相当于 WK、WV 都使用单位矩阵。</p>
+<p>例如，问“钥匙在哪里”时，输入 [0,2] 经 WQ 变换后得到 Q=[2,0]；问小明去向时，输入 [2,0] 变成 Q=[0,2]。</p>
+<p>我们拿到的正是两种不同的查询方向。对第一个问题，Q=[2,0] 与 A、B 的 K 分别计算点积，并除以 √2，得到分数 [1.414,0]。Softmax 转换后，A、B 的权重大约是 <strong>80.4% 和 19.6%</strong>。</p>
+<p>把两种方式放在一起看：</p>
+<table>
+<thead>
+<tr>
+<th>当前问题</th>
+<th>直接比较：A / B</th>
+<th>经 Q 投影：A / B</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>钥匙在哪里？</td>
+<td>19.6% / 80.4%</td>
+<td><strong>80.4% / 19.6%</strong></td>
+</tr>
+<tr>
+<td>小明后来去了哪里？</td>
+<td>80.4% / 19.6%</td>
+<td><strong>19.6% / 80.4%</strong></td>
+</tr>
+</tbody></table>
+<p>如果完全不考虑当前问题、始终对两条 Value 固定平均，那么不论问什么，A/B 的权重都只能是 50% / 50%。</p>
+<p><strong>输入没有改变；改变的是参与匹配的表示方式。</strong> 这说明独立投影可以在固定输入向量的基础上，提供另一套可调整的匹配规则。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/embedding-attention/v01/653b1f4b8555d90717690f638190b5acf6d9ed2a0033581fc151a4777a0c5c4d/direct-vs-projected-matching.png" alt="同一输入下直接匹配与增加 Q 投影的差异"></p>
+<p>当 V 暂时仍为 A=[1,0]、B=[0,1] 时，第一个问题投影后的 Attention 输出是 [0.804,0.196]，第二个问题是 [0.196,0.804]。它们是加权后的<strong>数值向量</strong>，不是“抽屉”或“厨房”这两个文字答案。</p>
+<p>再保持 Q/K 不变，只把 B 提供的 V 从 [0,1] 改成 [0,3]：权重依然是 80.4% / 19.6%，但第一个问题的输出变成了约 [0.804,0.587]。这就验证了：<strong>Q/K 影响分配权重，V 决定按这些权重汇总的内容。</strong></p>
+<p>我们用 <a href="experiment-07.md">实验 07：直接比较与投影匹配的对照</a>及其 Python 代码实际核算了这组结果；<a href="experiment-04.md">实验 04：固定 K/V，只改变 Q</a>则从另一个角度验证了同一机制。</p>
+<p>但实验里使用的矩阵全是<strong>人为设定</strong>的。它并没有证明训练后一定会得到这些值，也没有证明直接使用原始向量的模型一定学不会同样的行为——Embedding 和前面的网络层本身也可以学习改变输入表示。它验证的只是：在输入固定时，独立投影能提供额外的匹配自由度。</p>
+<p>现在还剩下真正的训练问题：<strong>我们在实验里直接指定了一个好用的 WQ；实际模型又怎样学到对预测有用的 WQ、WK 和 WV？</strong></p>
+<h2>六、没有“正确 Q/K/V”，三个投影矩阵又怎么训练？</h2>
+<p>第五节里，我们人为给 WQ 指定了一个“交换两个维度”的矩阵。真实模型当然不会事先知道自己应该采用哪一个矩阵。</p>
+<p>这里需要回到上一篇文章的训练机制：<strong>模型整体有预测目标，但 Q、K、V 这些中间向量没有各自的标准答案。</strong></p>
+<p>我们甚至不需要一份“问：钥匙在哪里？答：书桌抽屉”的问答数据。只需要普通文本，模型就能得到学习信号。</p>
+<p>例如，训练数据只有一段普通的叙述：</p>
+<blockquote>
+<p>小明把钥匙放进书桌抽屉。随后，他去了厨房。</p>
+</blockquote>
+<p>这里没有提问，也没有人工提供答案。<strong>模型的训练目标来自文本本身：给定前面的 Token，预测原文中实际出现的下一个 Token。</strong> 如果暂时采用教学用的单字切分，读到“小明把钥匙放进书桌抽”时，下一个目标字就是“屉”；真实 Tokenizer 不一定按汉字切分。</p>
+<p>训练程序可以把整段已知序列中的多个位置一起用于下一 Token 预测，再与各位置真实的后续 Token 比较并计算 Loss。每个位置只能在模型规定的范围内读取信息，不能直接偷看自己要预测的未来答案。在一个简化的信息流里：</p>
+<pre><code class="language-text">前向：训练 Token → Embedding → 输入表示 X
+                              │
+                        WQ / WK / WV
+                              ↓
+                         Q / K / V
+                              ↓
+                    Attention → 后续网络
+                              ↓
+                    下一 Token 的预测
+                              ↓
+                  与真实 Token 比较 → Loss
+
+反向：Loss → 各层梯度 → Attention 的梯度
+                              ↓
+                    WQ / WK / WV 的梯度
+                              ↓
+                        优化器更新参数
+</code></pre>
+<p>我们并没有告诉模型“正确的 Q 是 [2,0]”。但 Q 影响匹配权重，K 也影响匹配权重，V 影响汇总内容；这些中间结果又影响最终预测。于是，反向传播可以沿着计算关系，将最终 Loss 的梯度传回 WQ、WK、WV。</p>
+<p><strong>它们通常是端到端联合训练的，不是先把 WQ 训练完，再训练 WK，最后训练 WV。</strong></p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/embedding-attention/v01/6ddb7feb59f46e10c7f3ee478a62b3dc22c0fcbd4e1d1f43986400c8baed51dd/joint-qkv-training.png" alt="一个最终 Loss 联合训练 Q、K、V 投影矩阵"></p>
+<p>先用一个非常小的计算核对：把三组投影矩阵分别缩成一个标量，只给最终输出设置目标值 1，并使用平方误差。三个参数都初始化为 1，在同一次更新中会发生什么？</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th align="right">更新前</th>
+<th align="right">更新后</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>wq</td>
+<td align="right">1.0000</td>
+<td align="right">1.0053</td>
+</tr>
+<tr>
+<td>wk</td>
+<td align="right">1.0000</td>
+<td align="right">1.0053</td>
+</tr>
+<tr>
+<td>wv</td>
+<td align="right">1.0000</td>
+<td align="right">1.0197</td>
+</tr>
+<tr>
+<td>最终预测值</td>
+<td align="right">0.7311</td>
+<td align="right">0.7476</td>
+</tr>
+<tr>
+<td>Loss</td>
+<td align="right">0.0362</td>
+<td align="right">0.0319</td>
+</tr>
+</tbody></table>
+<p>我们只给整个玩具计算<strong>一个目标值</strong>，没有为 Q、K、V 分别指定“正确数值”，三个参数仍各自得到了梯度，Loss 也下降了。这个对称的例子中 wq、wk 的更新幅度碰巧相同，它们仍是两个独立参数，并不要求每次梯度都不同。<a href="experiment-05.md">实验与代码</a>可以复核这一点。</p>
+<p>上表是便于手算的标量模型，并非真实的语言模型训练。为了检验这条路径对<strong>没有任何问答的普通文本</strong>是否成立，我们还实际运行了一个小型因果 Attention 语言模型：把这段贯穿故事按单字转成 Token 序列，使用<strong>下一字目标与交叉熵 Loss</strong>进行训练，不给 Q/K/V 标注答案。</p>
+<p>第一次反向传播，WQ、WK、WV 的梯度范数分别为 <strong>0.1350、0.1424、0.2407</strong>，三组参数也都实际发生更新；同一训练样本的 Loss 从 <strong>3.1228</strong> 降至 80 次更新后的 <strong>0.0036</strong>。这说明<strong>没有自然语言问句，WQ/WK 仍能通过下一 Token 预测获得梯度</strong>。<a href="experiment-06.md">实验 06：普通文本中的 Q/K 训练与完整代码</a>记录了可复现设置及结果。</p>
+<p>不过，实验只是在一段短文本上拟合训练目标，<strong>不能证明模型理解了“钥匙和抽屉”的关系，或能够泛化到新句子</strong>。它补足的是从训练样本到 WQ/WK 梯度的实际计算路径，而不是语义能力的证明。</p>
+<p>最后再回到实验 07：我们还验证过，<strong>不同的 WQ/WK 参数组合可以得到完全相同的匹配权重</strong>。因此训练优化的是最终预测表现，并不存在每个输入都必须对应某一个唯一、标准的 Q 或 K。</p>
+<h2>七、一次 Attention 的结果，为什么还要继续计算？</h2>
+<p>第五节中，我们固定同一份输入，用同一个 WQ 分别计算出了两个问题的 Q；第六节说明，这个 WQ 的参数可以由最终预测 Loss 训练。</p>
+<p>但这又留下一个问题：<strong>当前位置的表示，怎么会包含前文的信息？</strong></p>
+<p>想象我们正在处理问题末尾的某个 Token 位置。它最初拿到的是这个位置的基础表示及位置相关信息，还没有因为当前这次输入而汇总其他位置的内容。</p>
+<p>一次 Self-Attention 会让它使用自己的 Q，与允许访问的位置的 K 计算权重，然后汇总这些位置的 V。假如前文存在与“钥匙放进书桌抽屉”有关的信息位置，这些位置的数值就<strong>可能</strong>通过加权汇总影响当前的输出。</p>
+<p>关键是：<strong>这个输出仍然是向量，不是“抽屉”两个字。</strong> 模型还可以继续加工这个向量，并把更新后的表示交给下一层。</p>
+<p>为了看清关系，先省略归一化、残差等具体计算，把多层信息流简化为：</p>
+<pre><code class="language-text">问题末尾某个位置的输入表示 x⁽⁰⁾
+                  ↓
+第 1 层：由 x⁽⁰⁾ 生成 Q，并与前文各位置的 K 匹配
+                  ↓
+        按权重汇总前文位置的 V
+                  ↓
+         经过这一层的其他计算
+                  ↓
+       新的当前位置表示 x⁽¹⁾
+         （可能已包含前文信息）
+                  ↓
+第 2 层：用 x⁽¹⁾ 和本层 WQ 生成新的 Q
+                  ↓
+         再次匹配、汇总并更新表示
+</code></pre>
+<p>现在可以回头理解第五节的教学算例：我们为两个问题人为指定了不同的当前位置输入向量，再用同一组参数计算出不同的 Q。<strong>前面层对上下文的汇总，是这些输入向量可能产生差异的来源之一。</strong></p>
+<p>当然，这不意味着第一层一定会识别“钥匙”，第二层就一定会识别“抽屉”。我们这里只是在追踪数值信息怎样跨位置汇入一个表示，再被后续层利用。一次 Attention 也并非完全不能利用上下文；堆叠多层提供了继续加工和反复交互的能力。</p>
+<p>真实的 Transformer 层还不止一个 Attention 计算。例如，<strong>Multi-Head Attention</strong> 使用多组 Q/K/V 投影，让不同注意力头并行地匹配和汇总信息；<strong>FFN</strong> 则对各位置当前的表示进一步做非线性变换。残差连接和归一化也参与每层计算。这里先知道它们怎样衔接，不把本篇扩展成全部 Transformer 组件的详解。</p>
+<p>到这里，我们已经解释了：<strong>输入向量怎样通过 Attention 获得上下文信息，又怎样成为后续层继续计算的基础。</strong></p>
+<p>至于生成回答时，当前位置究竟可以访问哪些 Token，以及最后的向量怎样变成下一个 Token 的预测和选择，那是下一篇需要解决的问题。</p>
+<h2>回到开头：我们到底解决了哪些问题？</h2>
+<p>小明把钥匙放进书桌抽屉，之后去了厨房。为什么同一段前文，面对不同提问可以得到不同回答？</p>
+<p>我们现在至少能解释模型内部的一段关键计算链：</p>
+<pre><code class="language-text">文字
+ ↓  Tokenizer 建立可重复使用的词表映射
+Token ID
+ ↓  按整数索引读取参数表
+Embedding 向量
+ ↓  各层计算得到当前位置的表示
+Q / K / V
+ ↓  Q 与 K 匹配 → Softmax 得到动态权重
+加权汇总 V
+ ↓  后续 Transformer 层不断加工表示
+最终输出层预测下一个 Token
+</code></pre>
+<p>这条链背后有几个经过推导的设计选择：</p>
+<ul>
+<li><strong>Token ID 是离散索引，不是参与 Attention 矩阵运算的数值特征。</strong> 直接用字符串查向量也可以；工程上通常用整数索引组织输入并批量读取参数表。</li>
+<li>不直接把 Token ID 当连续数值特征，是因为编号没有天然语义；Embedding 提供可学习表示，并真正参与后续向量计算。</li>
+<li>不把各位置的信息永久按固定比例汇总，是因为我们希望当前位置能根据输入计算不同权重；Attention 给出一种可微分、可训练的实现。</li>
+<li><strong>三组投影是架构选择，不是训练结果凭空发明的结构。</strong> 固定输入时，可学习投影让匹配方式与被传递的内容分别调整；Q/K/V 是内部向量，不存在人为给定的唯一标准答案。最终 Loss 可以沿计算图训练生成它们的参数。</li>
+</ul>
+<p>注意，我们仍没有通过这几个玩具数字“证明模型已经理解钥匙在哪里”。真实的语言理解与生成来自训练得到的许多参数、多层计算及上下文共同作用。本文完成的是把其中一个关键的机制拆成能够追踪、计算和验证的步骤。</p>
+<p>最后还剩下一个自然问题：当模型已经得到上下文相关的向量表示，<strong>如何将它变成词表上的分数、选出下一个 Token，并持续生成回答？</strong></p>
+<p>这会是后续文章需要解释的部分。</p>
+<hr>
+<p><em>文中 Token、索引行、二维向量和注意力权重均为教学示例。数值实验见 <a href="experiment-04.md">Attention 控制对照</a>、<a href="experiment-05.md">Q/K/V 标量梯度实验</a>、<a href="experiment-06.md">普通文本训练实验</a>与<a href="experiment-07.md">投影设计对照实验</a>。Attention 的早期机器翻译背景可参考 <a href="https://arxiv.org/abs/1409.0473">Bahdanau et al. (2014)</a>；Transformer 的公式与投影设计见 <a href="https://arxiv.org/abs/1706.03762">Attention Is All You Need</a> 第 3.2 节，代码实现可对照 <a href="https://nlp.seas.harvard.edu/annotated-transformer/">The Annotated Transformer</a>。教学结构参考 <a href="https://jalammar.github.io/illustrated-transformer/">The Illustrated Transformer</a> 与 <a href="https://www.youtube.com/watch?v=kCc8FmEb1nY">Andrej Karpathy 的 GPT 从零实现课程</a>。</em></p>
+</article></div><div class="ending"><a href="/">← 返回文章列表</a></div></div></main><footer class="footer"><div class="shell footer-row"><span>© 2026 James Notes · 保持好奇，持续验证</span><span>Built with Astro · Published from Git</span></div></footer></body></html>
