@@ -1,0 +1,170 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="从输出矩阵如何为词表候选打分出发，解释不同生成前缀如何影响下一 Token，以及训练与生成的计算节奏为何不同。"><link rel="canonical" href="https://james-chi-jie.github.io/articles/gpt-autoregressive/"><meta name="theme-color" content="#f8fafc"><title>GPT 为什么能够逐 Token 生成回答？ · James Notes</title><style>:root{color:#172336;font-synthesis:none;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,SF Pro Text,PingFang SC,Microsoft YaHei,system-ui,sans-serif}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0}a{color:inherit}img{max-width:100%}.shell{max-width:1120px;margin:0 auto;padding:0 28px}.topbar{background:#fff;border-bottom:1px solid #e9edf2}.nav{justify-content:space-between;align-items:center;gap:20px;height:78px;display:flex}.brand{letter-spacing:-.4px;align-items:center;gap:12px;font-size:18px;font-weight:800;text-decoration:none;display:flex}.brand-mark{color:#fff;background:#182e52;border-radius:12px;place-items:center;width:38px;height:38px;font-size:14px;display:grid}.navlinks{color:#526175;align-items:center;gap:24px;font-size:14px;display:flex}.navlinks a{text-decoration:none}.navlinks a:hover{color:#2563eb}.main{min-height:calc(100vh - 174px)}.footer{color:#8390a0;background:#fff;border-top:1px solid #e5eaf0;padding:26px 0;font-size:13px}.footer-row{justify-content:space-between;gap:15px;display:flex}.eyebrow{letter-spacing:2px;color:#346db4;text-transform:uppercase;font-size:12px;font-weight:700}.muted{color:#637287}@media (width<=650px){.shell{padding:0 18px}.nav{height:64px}.navlinks{gap:12px;font-size:13px}.brand{font-size:16px}.footer-row{display:block}}
+</style><link rel="stylesheet" href="/_astro/_slug_.CF63Jl4j.css"></head><body><header class="topbar"><div class="shell nav"><a class="brand" href="/"><span class="brand-mark">JN</span><span>James Notes</span></a><nav class="navlinks" aria-label="主导航"><a href="/">文章</a><a href="https://github.com/James-Chi-Jie" target="_blank" rel="noreferrer">GitHub ↗</a></nav></div></header><main class="main"><div class="shell"><a class="back" href="/">← 所有文章</a><header class="article-header"><div class="meta"><span>AI &amp; Agent</span><time datetime="2026-11-12">2026-11-12</time></div><h1>GPT 为什么能够逐 Token 生成回答？</h1><p>从输出矩阵如何为词表候选打分出发，解释不同生成前缀如何影响下一 Token，以及训练与生成的计算节奏为何不同。</p></header><div class="paper"><article class="prose"><p><a href="https://james-chi-jie.github.io/articles/embedding-attention/">上一篇文章</a>中，我们沿着“小明把钥匙放进书桌抽屉，后来自己去了厨房”的故事，看到 Attention 如何帮助模型从前文汇总相关信息。</p>
+<p>现在，把完整故事和一个问题交给 GPT：</p>
+<blockquote>
+<p>小明把钥匙放进书桌抽屉，随后去了厨房。钥匙在哪里？</p>
+</blockquote>
+<p>我们期待它回答“书桌抽屉”。可是，输入并没有直接给出答案，屏幕上的文字也不是事先写好后逐字播放的。<strong>GPT 究竟怎样从已有前文，一步步产生回答？</strong></p>
+<h2>一、问题和答案，究竟哪些是我们给它的？</h2>
+<p>为了观察生成过程，先把输入写成一个便于续写的形式：</p>
+<blockquote>
+<p>小明把钥匙放进书桌抽屉，随后去了厨房。问：钥匙在哪里？答：</p>
+</blockquote>
+<p>注意，<strong>“问：”和“答：”是我们给它的文字，真正的答案“书桌抽屉”并没有提前放进去</strong>。</p>
+<p>故事提供了两条信息：钥匙被放进抽屉，小明后来去了厨房。我们希望模型依据<strong>与钥匙有关的线索</strong>回答，而不只是重复最后出现的地点。至于它为什么可能做对，先交代一个必要前提。</p>
+<h2>二、模型为什么可能答对没见过的题？</h2>
+<p>即使训练时没有出现过这道具体的“小明与钥匙”问答，模型也<strong>可能</strong>回答正确。因为它在大量文本的下一 Token 预测训练中，不仅可能记住局部表达，也可能学到能用于新文本的模式；这次输入又明确提供了“钥匙放进抽屉”的线索。它因此可能更倾向于续写“书桌抽屉”，而不是“厨房”。</p>
+<p>但<strong>没见过这道题</strong>不等于<strong>从没接触过任何问答数据</strong>，一次答对也不能证明模型确实发生了泛化。预训练、后训练和泛化的验证，后续会单独研究。<strong>这篇先关注另一个问题：模型怎样把当前的预测倾向变成一个具体的 Token？</strong></p>
+<h2>三、模型怎样决定第一个新 Token？</h2>
+<p>回到“小明把钥匙放进书桌抽屉，随后去了厨房。问：钥匙在哪里？答：”这段前文。模型已经读过故事和问题，但还没有输出答案。<strong>它怎样把内部的数值表示转换成“书桌抽屉”这个候选？</strong></p>
+<p>我们可以直接接上 <a href="https://james-chi-jie.github.io/articles/embedding-attention/">AI03</a> 已经算过的一步：在上一篇的二维教学实验中，询问“钥匙在哪里”时，两条线索参与 Attention 汇总，得到向量 <strong>[0.804, 0.196]</strong>。它来自“钥匙放在抽屉”这条线索与“小明去了厨房”这条线索的加权汇总，还不是中文答案。</p>
+<p>真实 GPT 在 Attention 之后通常还有其他计算，并由最后一层的隐藏向量进入输出层。<strong>为了顺着上一篇的数字继续手算，我们暂时省略这些中间步骤，假设输出层这次接收到的二维向量就是 [0.804, 0.196]。</strong> 这是人为简化的接力计算，不是声称真实 GPT 会将那次 Attention 输出原样直接用来选词。</p>
+<p>下一步，输出层要把这个向量转换成<strong>词表中每个候选 Token 的分数</strong>。我们仍用三个候选组成教学词表，按以下固定顺序排列：</p>
+<table>
+<thead>
+<tr>
+<th>词表中的候选 Token</th>
+<th align="right">书桌抽屉</th>
+<th align="right">厨房</th>
+<th align="right">。</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>输出矩阵中对应的<strong>列</strong></td>
+<td align="right">[2, 0]</td>
+<td align="right">[1, 0]</td>
+<td align="right">[0, 1]</td>
+</tr>
+</tbody></table>
+<p>这张表就解释了接下来的矩阵：<strong>第一列负责算“书桌抽屉”的分数，第二列负责算“厨房”的分数，第三列负责算“。”的分数</strong>。每一列有两个数，是因为我们手里的上下文向量只有两个数。</p>
+<p>把这三列放在一起，就得到一个两行三列的输出矩阵。现在让刚才从上一篇借来的向量与它相乘：</p>
+<span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mrow><mo fence="true">[</mo><mtable rowspacing="0.16em" columnalign="center center" columnspacing="1em"><mtr><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>0.804</mn></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>0.196</mn></mstyle></mtd></mtr></mtable><mo fence="true">]</mo></mrow><mo>×</mo><mrow><mo fence="true">[</mo><mtable rowspacing="0.16em" columnalign="center center center" columnspacing="1em"><mtr><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>2</mn></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>1</mn></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>0</mn></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>0</mn></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>0</mn></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>1</mn></mstyle></mtd></mtr></mtable><mo fence="true">]</mo></mrow><mo>=</mo><mrow><mo fence="true">[</mo><mtable rowspacing="0.16em" columnalign="center center center" columnspacing="1em"><mtr><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>1.608</mn></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>0.804</mn></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mn>0.196</mn></mstyle></mtd></mtr></mtable><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">\begin{bmatrix}0.804&amp;0.196\end{bmatrix}
+\times
+\begin{bmatrix}2&amp;1&amp;0\\0&amp;0&amp;1\end{bmatrix}
+=
+\begin{bmatrix}1.608&amp;0.804&amp;0.196\end{bmatrix}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="katex-base"><span class="katex-strut" style="height:1.2em;vertical-align:-0.35em;"></span><span class="minner"><span class="mopen delimcenter" style="top:0em;"><span class="delimsizing size1">[</span></span><span class="mord"><span class="mtable"><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.85em;"><span style="top:-3.01em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">0.804</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.35em;"><span></span></span></span></span></span><span class="arraycolsep" style="width:0.5em;"></span><span class="arraycolsep" style="width:0.5em;"></span><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.85em;"><span style="top:-3.01em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">0.196</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.35em;"><span></span></span></span></span></span></span></span><span class="mclose delimcenter" style="top:0em;"><span class="delimsizing size1">]</span></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:2.4em;vertical-align:-0.95em;"></span><span class="minner"><span class="mopen delimcenter" style="top:0em;"><span class="delimsizing size3">[</span></span><span class="mord"><span class="mtable"><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.45em;"><span style="top:-3.61em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">2</span></span></span><span style="top:-2.41em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.95em;"><span></span></span></span></span></span><span class="arraycolsep" style="width:0.5em;"></span><span class="arraycolsep" style="width:0.5em;"></span><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.45em;"><span style="top:-3.61em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">1</span></span></span><span style="top:-2.41em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">0</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.95em;"><span></span></span></span></span></span><span class="arraycolsep" style="width:0.5em;"></span><span class="arraycolsep" style="width:0.5em;"></span><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.45em;"><span style="top:-3.61em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">0</span></span></span><span style="top:-2.41em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.95em;"><span></span></span></span></span></span></span></span><span class="mclose delimcenter" style="top:0em;"><span class="delimsizing size3">]</span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:1.2em;vertical-align:-0.35em;"></span><span class="minner"><span class="mopen delimcenter" style="top:0em;"><span class="delimsizing size1">[</span></span><span class="mord"><span class="mtable"><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.85em;"><span style="top:-3.01em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">1.608</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.35em;"><span></span></span></span></span></span><span class="arraycolsep" style="width:0.5em;"></span><span class="arraycolsep" style="width:0.5em;"></span><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.85em;"><span style="top:-3.01em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">0.804</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.35em;"><span></span></span></span></span></span><span class="arraycolsep" style="width:0.5em;"></span><span class="arraycolsep" style="width:0.5em;"></span><span class="col-align-c"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.85em;"><span style="top:-3.01em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord">0.196</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.35em;"><span></span></span></span></span></span></span></span><span class="mclose delimcenter" style="top:0em;"><span class="delimsizing size1">]</span></span></span></span></span></span></span>
+<p>结果不是抽象的三个数字，而是<strong>按照同一词表顺序排列的三个候选分数</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>候选 Token</th>
+<th align="right">书桌抽屉</th>
+<th align="right">厨房</th>
+<th align="right">。</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>得分（Logit）</td>
+<td align="right"><strong>1.608</strong></td>
+<td align="right">0.804</td>
+<td align="right">0.196</td>
+</tr>
+</tbody></table>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/gpt-autoregressive/v01/e1e69550c43aea3373eeed0045d00cee09ebdf2e9d2dcff0caff4194be66476a/vocabulary-output-projection.png" alt="输出层如何把上下文向量转换成词表候选分数"></p>
+<p><small>从上一篇的教学向量出发，经输出矩阵得到三个候选分数；数值为教学示意。</small></p>
+<p>例如，“书桌抽屉”的分数来自上下文向量与输出矩阵<strong>第一列</strong>的点积：<strong>0.804 × 2 + 0.196 × 0 = 1.608</strong>。另外两列也按同样方式计算。这里的 Logit 是尚未转换成概率的分数，不代表“钥匙真实位于抽屉的概率”。</p>
+<p>如果采用最简单的选词方法——<strong>选择分数最大的候选</strong>，那么第一轮便选中“书桌抽屉”。到这里，我们就把上一篇的<strong>Attention 汇总向量</strong>，经本篇的<strong>词表输出矩阵</strong>，连接到了真正要生成的候选 Token 上。</p>
+<p>不过，这个结果不能用来证明模型学会了找钥匙。<strong>向量和输出矩阵的数字都属于教学设定</strong>，我们特意挑选了容易计算、并能让“书桌抽屉”得分最高的一组参数。在真实 GPT 中，输出矩阵的数值由训练学习得到，而且词表与隐藏向量的规模远比这里大。向量的第一维或第二维也不天然代表“抽屉”或“厨房”；这里只是人为约定每<strong>列</strong>对应哪个候选 Token。</p>
+<p>最后再把数值计算和文字对应起来：严格说，模型从词表分数中选出的是一个 <strong>Token ID</strong>，通过 Tokenizer 的解码关系才得到可见文字。这里把“书桌抽屉”当作一个 Token，也是为了方便演示；真实 Tokenizer 可能把它切成多个 Token。</p>
+<p>选最大分数也只是最简单的一种生成策略；实际模型还可以根据概率进行采样。无论用哪种选择方式，<strong>第一轮最终选出的 Token 都会成为下一轮前文的一部分</strong>。这正是下一节要解释的事情。</p>
+<h2>四、为什么后面的内容要依赖前面已经生成的内容？</h2>
+<p>前面，我们看到模型可以从“答：”开始，选择“书桌抽屉”。下一轮，把它加到前文后，可能再选择“。”，于是出现“书桌抽屉。”。</p>
+<table>
+<thead>
+<tr>
+<th>轮次</th>
+<th>这一轮已知的前文末尾</th>
+<th>本轮选择</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>第一轮</td>
+<td><code>……钥匙在哪里？答：</code></td>
+<td>书桌抽屉</td>
+</tr>
+<tr>
+<td>第二轮</td>
+<td><code>……钥匙在哪里？答：书桌抽屉</code></td>
+<td>。</td>
+</tr>
+</tbody></table>
+<p>但这只是展示了生成的步骤，还没有回答一个更重要的问题：<strong>为什么下一轮不能仍然只看原始问题，而必须把前面生成的文字一起考虑进去？</strong></p>
+<p>原因是，GPT 每次预测的并不是“这道题的固定答案”，而是<strong>给定当前整段前文，哪个 Token 更适合接在后面</strong>。这里的“前文”不只包括用户输入，还包括模型在刚才几轮已经生成的内容。</p>
+<p>我们用同一道问题，比较两种可能已经写到一半的回答：</p>
+<table>
+<thead>
+<tr>
+<th>原问题不变，已经生成的回答片段</th>
+<th>后面更自然的续写示意</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>答：钥匙在</code></td>
+<td><code>书桌抽屉</code></td>
+</tr>
+<tr>
+<td><code>答：小明去了</code></td>
+<td><code>厨房，但钥匙仍在书桌抽屉</code></td>
+</tr>
+</tbody></table>
+<p>这两条路径都可以表达同一个故事的信息，但<strong>后面适合接什么，取决于前面究竟已经写了什么</strong>。第一条接“书桌抽屉”比较自然；第二条如果立刻接“书桌抽屉”，反而会把“小明去了哪里”和“钥匙在哪里”混在一起。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/gpt-autoregressive/v01/856069d4c3ae9aca387e22cc7478b76f8e6faf0bd3e9249cadec0750dc730cf3/autoregressive-prefix-dependency.png" alt="不同的生成前缀如何影响后续预测"></p>
+<p><small>不同前缀会影响下一 Token 的候选倾向；本轮选出的 Token 被追加后，形成下一轮的前缀。候选倾向仅为机制示意，不代表真实模型分数。</small></p>
+<p>表里的“已经生成的回答片段”和“续写”都可能包含多个 Token，这里只是为了让差别在中文里看得出来；它们不是实际模型的候选分数或输出记录。</p>
+<p><strong>从模型计算的角度，这个差别是怎么发生的？</strong> 每选出一个新的 Token ID，它就被加入下一轮输入。模型对新前缀形成上下文相关的表示：已有 Token、它们的位置以及 Attention 汇总的信息共同影响最后位置的表示；输出层再根据这个表示，计算新一轮的词表分数。</p>
+<p>因此，<strong>已生成的内容变化 → 下一轮输入变化 → 上下文表示与候选分数可能变化 → 下一 Token 的选择也可能变化</strong>。这里没有在生成过程中重新训练参数；改变的是这次计算所依据的上下文。</p>
+<p>反过来假设，我们每一轮都<strong>不追加已经选出的 Token</strong>，只是拿相同的原始提示反复预测。在模型参数不变、没有额外随机因素、每次都取最高分的情况下，每一轮面对的是同一个输入，得到的也会是同一组分数，进而反复选出同一个 Token。它甚至不知道自己刚才已经写了什么，自然无法把回答接下去。</p>
+<p>这也解释了为什么在常规自回归生成中，不能一开始就确定后面所有 Token：在第一轮结果尚未选定时，后面的计算究竟应该沿着哪条前缀继续，还没有确定。理论上可以同时尝试许多候选分支，但<strong>选定的那一条实际续写路径</strong>，仍取决于之前的选择；这不是 GPU 完全不能并行，而是生成任务本身的条件关系。</p>
+<p>所以，GPT 的常规生成循环可以更准确地写成：</p>
+<blockquote>
+<p><strong>用户输入 + 已生成的 Token → 预测并选出下一个 Token → 把它加到已生成内容中 → 继续。</strong></p>
+</blockquote>
+<p>真实生成还会有停止条件，例如生成结束标记、应用设定的长度上限等；<strong>出现句号本身不等于模型必然停止</strong>。此外，屏幕逐字显示或一次显示一段属于应用的呈现方式，不能据此判断底层 Token 的边界。</p>
+<p>现在我们不仅知道了“每次追加一个 Token”，也知道了<strong>为什么必须这样追加：否则下一轮就无法根据自己真正写下的内容继续组织回答</strong>。</p>
+<h2>五、那训练为什么可以同时预测很多位置？</h2>
+<p>既然生成时要先等上一轮结果，训练一整篇文章，难道也要先生成第一个词，再生成第二个词？</p>
+<p>区别在于：<strong>训练时，整段真实文本已经存在；生成时，未来要写的文本还不知道。</strong></p>
+<p>仍然把“书桌抽屉”当成一个教学 Token。假设训练材料已经被切成：</p>
+<blockquote>
+<p>钥匙 / 在 / 书桌抽屉 / 。</p>
+</blockquote>
+<p>同一条数据可以提供三个练习：</p>
+<table>
+<thead>
+<tr>
+<th>当前已知前缀</th>
+<th>下一 Token 的训练目标</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>钥匙</td>
+<td>在</td>
+</tr>
+<tr>
+<td>钥匙 / 在</td>
+<td>书桌抽屉</td>
+</tr>
+<tr>
+<td>钥匙 / 在 / 书桌抽屉</td>
+<td>。</td>
+</tr>
+</tbody></table>
+<p>所有目标都来自同一条已经存在的文本，模型不需要先靠自己预测“在”，才能获得下一道练习的前缀。</p>
+<p>但这不等于训练时允许偷看答案。预测“在”的那个位置，不能提前读到后面的“在”或“书桌抽屉”；预测“书桌抽屉”的位置，也不能读取未来的句号。GPT 式模型通常用 <strong>Causal Mask（因果遮罩）</strong> 在 Attention 中限制每个位置只能读取自己和更早的位置。</p>
+<p>这样，训练时多个已知位置的下一 Token 分数可以<strong>在一次前向计算里批量得到</strong>，再分别与真实目标比较、计算 Loss 并更新参数。这里的并行是指多个位置可一起计算，不意味着 Transformer 各层之间没有顺序依赖。</p>
+<p>生成时则没有这些已知的正确后续 Token。第一轮真正选出了什么，才决定第二轮的新前缀。这就是看似矛盾的两种表现背后的同一个原因：<strong>已知信息不同，计算依赖也不同。</strong></p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/gpt-autoregressive/v01/06c76829683f4dd0eef3b645268f65d62f346a075bf93294cc862b3f9594b965/training-vs-generation.png" alt="训练与生成为什么采用不同的计算节奏"></p>
+<p><small>训练时多个已知位置的目标可以批量计算；生成时下一 Token 尚未知，需要逐步确定。</small></p>
+<p><a href="experiments/next_token_mechanics.py">最小 PyTorch 实验</a> 对照验证了训练目标错位、遮罩阻止未来信息泄漏，以及连续生成时追加新 Token 的过程。实验网络没有经过训练，<strong>因此它只验证计算路径，不证明模型的回答能力或泛化能力</strong>。</p>
+<h2>六、现在我们真正理解了什么？</h2>
+<p>回到小明和钥匙的故事。它是否真的理解了故事、是否具备泛化能力，需要专门的实验回答；<strong>本文解释的是回答怎样一步步产生</strong>。</p>
+<p>一旦要输出回答，GPT 使用的仍是同一个下一 Token 预测过程：<strong>利用当前上下文形成数值表示，给整个词表打分，选出一个 Token，把它加到前文，再继续</strong>。新文字不是一次性预先写好的；后续预测依赖已经确定的前文。</p>
+<p>训练时，整段文本的目标已知，所以多个位置可以在因果约束下并行学习；生成时，接下来要写什么还未知，通常要逐步确定。</p>
+<p>这也留下一个工程上的新问题：<strong>既然每轮都要利用之前的上下文，新 Token 生成后，模型是否必须重新计算所有旧 Token？哪些已经做过的计算能够复用？</strong></p>
+<p>这个问题会引出 Prefill、Decode 与 KV Cache。</p>
+<hr>
+<p><strong>进一步核对的原始资料</strong></p>
+<ul>
+<li>Sebastian Raschka：<a href="https://www.sebastianraschka.com/llms-from-scratch/">Build a Large Language Model (From Scratch)</a> 与 <a href="https://github.com/rasbt/LLMs-from-scratch/blob/main/ch04/01_main-chapter-code/gpt.py">第 4 章 GPT 生成代码</a>：用于核对输出头、Logits 与逐 Token 生成路径。</li>
+</ul>
+</article></div><div class="ending"><a href="/">← 返回文章列表</a></div></div></main><footer class="footer"><div class="shell footer-row"><span>© 2026 James Notes · 保持好奇，持续验证</span><span>Built with Astro · Published from Git</span></div></footer></body></html>
