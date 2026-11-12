@@ -1,0 +1,301 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="从 Prefill 建立历史 K/V 到 Decode 增量处理新 Token，解释因果 Attention 为什么允许复用旧结果，以及 KV Cache 的显存代价。"><link rel="canonical" href="https://james-chi-jie.github.io/articles/prefill-decode-kv-cache/"><meta name="theme-color" content="#f8fafc"><title>GPT 如何避免重复计算？从 Prefill 到 KV Cache · James Notes</title><style>:root{color:#172336;font-synthesis:none;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,SF Pro Text,PingFang SC,Microsoft YaHei,system-ui,sans-serif}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0}a{color:inherit}img{max-width:100%}.shell{max-width:1120px;margin:0 auto;padding:0 28px}.topbar{background:#fff;border-bottom:1px solid #e9edf2}.nav{justify-content:space-between;align-items:center;gap:20px;height:78px;display:flex}.brand{letter-spacing:-.4px;align-items:center;gap:12px;font-size:18px;font-weight:800;text-decoration:none;display:flex}.brand-mark{color:#fff;background:#182e52;border-radius:12px;place-items:center;width:38px;height:38px;font-size:14px;display:grid}.navlinks{color:#526175;align-items:center;gap:24px;font-size:14px;display:flex}.navlinks a{text-decoration:none}.navlinks a:hover{color:#2563eb}.main{min-height:calc(100vh - 174px)}.footer{color:#8390a0;background:#fff;border-top:1px solid #e5eaf0;padding:26px 0;font-size:13px}.footer-row{justify-content:space-between;gap:15px;display:flex}.eyebrow{letter-spacing:2px;color:#346db4;text-transform:uppercase;font-size:12px;font-weight:700}.muted{color:#637287}@media (width<=650px){.shell{padding:0 18px}.nav{height:64px}.navlinks{gap:12px;font-size:13px}.brand{font-size:16px}.footer-row{display:block}}
+</style><link rel="stylesheet" href="/_astro/_slug_.CF63Jl4j.css"></head><body><header class="topbar"><div class="shell nav"><a class="brand" href="/"><span class="brand-mark">JN</span><span>James Notes</span></a><nav class="navlinks" aria-label="主导航"><a href="/">文章</a><a href="https://github.com/James-Chi-Jie" target="_blank" rel="noreferrer">GitHub ↗</a></nav></div></header><main class="main"><div class="shell"><a class="back" href="/">← 所有文章</a><header class="article-header"><div class="meta"><span>AI &amp; Agent</span><time datetime="2026-11-12">2026-11-12</time></div><h1>GPT 如何避免重复计算？从 Prefill 到 KV Cache</h1><p>从 Prefill 建立历史 K/V 到 Decode 增量处理新 Token，解释因果 Attention 为什么允许复用旧结果，以及 KV Cache 的显存代价。</p></header><div class="paper"><article class="prose"><p><strong>先说结论：KV Cache 让 GPT 在生成新 Token 时复用历史计算结果，而不必每一轮都重新处理整个前缀。</strong> 之所以可以复用，是因为因果遮罩保证旧位置看不到未来 Token；追加新 Token，不会改变旧位置在各层已经算出的表示。</p>
+<p>它换来的不是“免费加速”：历史 K/V 需要占用显存，而且上下文越长、同时处理的请求越多，占用就越大。</p>
+<p>下面沿着一次生成过程回答三个问题：Prefill 怎样建立缓存？为什么旧结果仍然有效？缓存节省计算的代价是什么？</p>
+<h2>一、一次生成中，Prefill 和 Decode 分别做什么？</h2>
+<p>假设用户提交的问题被切成四个 Token：A、B、C、D。它们在推理开始时已经全部确定，模型可以一次处理这段已知输入。</p>
+<p>这一步叫 <strong>Prefill（提示处理）</strong>。在 Transformer 的每一层里，A、B、C、D 可以并行计算；因果遮罩仍然限制每个位置只能读取自己和前面的位置：</p>
+<table>
+<thead>
+<tr>
+<th>位置</th>
+<th>可以读取</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A</td>
+<td>A</td>
+</tr>
+<tr>
+<td>B</td>
+<td>A、B</td>
+</tr>
+<tr>
+<td>C</td>
+<td>A、B、C</td>
+</tr>
+<tr>
+<td>D</td>
+<td>A、B、C、D</td>
+</tr>
+</tbody></table>
+<p>因此，<strong>并行处理不等于让 A 看到 B、C、D</strong>。并行发生在同一层的位置计算之间；网络仍然要一层接一层地传递结果。</p>
+<p>Prefill 结束时有两个结果：</p>
+<ol>
+<li>模型根据最后一个输入位置 D 的输出，计算下一个 Token 的概率分布，并选出 E。</li>
+<li>模型把各层为 A、B、C、D 算出的 K 和 V 保存起来，作为初始 <strong>KV Cache</strong>。</li>
+</ol>
+<p>注意：此时缓存里还没有 E。E 只是刚刚选出的预测结果，尚未作为输入经过 Transformer。</p>
+<p>接下来进入 <strong>Decode（逐 Token 生成）</strong>。模型把 E 作为新输入，计算 E 自己的 Q、K、V；E 的 Query 读取缓存中 A～D 的 K/V，同时把 E 的 K/V 加入缓存，再根据新的输出选出 F。</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>本轮输入</th>
+<th>本轮结束后的缓存</th>
+<th>选出的下一个 Token</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Prefill</td>
+<td>A、B、C、D</td>
+<td>A～D 的 K/V</td>
+<td>E</td>
+</tr>
+<tr>
+<td>Decode 第一轮</td>
+<td>E</td>
+<td>A～E 的 K/V</td>
+<td>F</td>
+</tr>
+<tr>
+<td>Decode 第二轮</td>
+<td>F</td>
+<td>A～F 的 K/V</td>
+<td>G</td>
+</tr>
+</tbody></table>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/prefill-decode-kv-cache/v01/87b621101cbcb095c54fe3c19669b2e60cce414115abe16ae96dcc9e5643a104/prefill-decode-kv-cache-flow.png" alt="Prefill 建立历史 K/V，Decode 用新 Token 的 Q 读取历史缓存，并追加新 K/V"></p>
+<p><small>Prefill 为已知 Prompt 建立各层 K/V；Decode 用新 Token 的 Q 读取历史 K/V，并将新 K/V 留给后续生成。</small></p>
+<p>这就是从 Prefill 到 Decode 的交接：<strong>Prefill 一次处理已经知道的 Prompt；Decode 每轮只处理新确定的 Token，并读取此前保存的历史 K/V。</strong></p>
+<p>Prefill 和 Decode 都是<strong>推理阶段内部的两个阶段</strong>，不是训练与推理的对应关系。常规模型训练也可以在因果遮罩下并行处理已知序列，但训练还需要计算损失并通过反向传播更新参数。</p>
+<h2>二、如果没有 KV Cache，会重复做多少工作？</h2>
+<p>先看一种可行但低效的做法：每生成一个 Token，就把“原始 Prompt + 已生成内容”重新送进模型，完整计算一遍。</p>
+<p>仍然从 A、B、C、D 四个位置开始。假设接下来依次选出 E、F、G，那么模型要处理的前缀长度是 4、5、6、7：</p>
+<table>
+<thead>
+<tr>
+<th>计算轮次</th>
+<th align="right">本轮前缀长度</th>
+<th align="right">不使用缓存：重新处理</th>
+<th align="right">使用缓存：本轮新增处理</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Prefill，预测 E</td>
+<td align="right">4</td>
+<td align="right">4 个位置</td>
+<td align="right">4 个位置</td>
+</tr>
+<tr>
+<td>Decode，预测 F</td>
+<td align="right">5</td>
+<td align="right">5 个位置</td>
+<td align="right">1 个位置</td>
+</tr>
+<tr>
+<td>Decode，预测 G</td>
+<td align="right">6</td>
+<td align="right">6 个位置</td>
+<td align="right">1 个位置</td>
+</tr>
+<tr>
+<td>Decode，预测 H</td>
+<td align="right">7</td>
+<td align="right">7 个位置</td>
+<td align="right">1 个位置</td>
+</tr>
+<tr>
+<td><strong>累计</strong></td>
+<td align="right">—</td>
+<td align="right"><strong>22 个位置</strong></td>
+<td align="right"><strong>7 个位置</strong></td>
+</tr>
+</tbody></table>
+<p>不使用缓存时，前面的位置会反复计算；使用缓存时，四个初始位置只在 Prefill 中处理一次，后面每轮只新增一个位置。</p>
+<p>这张表数的是每层处理过的位置数量，用来展示重复工作；它不是 FLOPs 或真实速度的测量。要理解为什么这 15 个位置可以省掉，还需要回答一个关键问题：<strong>新 Token 到来后，为什么旧 Token 的计算结果不会改变？</strong></p>
+<h2>三、为什么追加新 Token，不需要重算旧 Token？</h2>
+<p>关键在于 Attention 不是两个 Token 对称地互相计算。<strong>每个位置用自己的 Query（Q）查询允许访问的 Key（K），再按匹配结果读取对应的 Value（V）。</strong></p>
+<p>假设现在有五个位置 A、B、C、D、E。下面每一行表示谁在发起查询，每一列表示它可以读取谁的 K/V：</p>
+<table>
+<thead>
+<tr>
+<th>Query \ Key / Value</th>
+<th>A</th>
+<th>B</th>
+<th>C</th>
+<th>D</th>
+<th>E</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>A 的 Query</td>
+<td>✓</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>B 的 Query</td>
+<td>✓</td>
+<td>✓</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>C 的 Query</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>D 的 Query</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>—</td>
+</tr>
+<tr>
+<td>E 的 Query</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+<td>✓</td>
+</tr>
+</tbody></table>
+<p>✓ 表示允许读取；— 表示因果遮罩禁止读取。</p>
+<p>从表中可以直接看到两个方向：</p>
+<ul>
+<li>A、B、C、D 的 Query 都不会读取 E，因为 E 是它们的未来位置。</li>
+<li>E 的 Query 可以读取 A、B、C、D，因为它们是 E 的历史位置。</li>
+</ul>
+<p>所以，<strong>旧 Token 并不是与 E 毫无关系：E 仍然会使用旧 Token 已经算好的 K/V。只是旧 Token 不会反过来读取 E。</strong></p>
+<p>这正是旧结果能够复用的原因。追加 E 之前，A、B、C、D 能看到的信息已经确定；追加 E 之后，它们的可见范围没有变化。因果遮罩会在 Softmax 前屏蔽未来位置对应的注意力分数，使这些位置的注意力权重为 0。</p>
+<p><img src="https://pub-589c53d82cac4e4a92139508d7ba9b97.r2.dev/articles/prefill-decode-kv-cache/v01/ded2edfbc478c95119a4a6e48637ea591ac7deb3641c022b2258222a81b89116/causal-mask-old-rows-unchanged.png" alt="追加 E 前后，旧 Query 的可见范围保持不变"></p>
+<p><small>追加 E 只增加新的 Query 行；原有 A～D 的可见范围不变，旧 Query 对 E 的位置仍被因果遮罩。</small></p>
+<p>这个性质会逐层延续。在标准 decoder-only Transformer 中，跨 Token 传递信息的是因果 Attention；残差连接、归一化和 FFN 都在各个位置分别处理，不会把 E 的信息传回 A、B、C、D。因此，旧位置在第一层的表示不变，后续层接收到的旧位置输入也不变。在常规关闭 Dropout 的确定性推理中，只要模型参数、已有 Token 和位置没有改变，旧位置各层的表示以及由它们得到的 K/V 就可以继续复用。</p>
+<p>还有一个实现边界需要分清：<strong>因果语义保证旧 Query 不会读取 E，但不保证每一种底层实现都跳过了对应的乘法。</strong> 有些实现可能先算出注意力分数再应用遮罩，优化过的 Kernel 也可能直接跳过部分无效计算。这里讨论的是哪些结果在语义上有效、因此可以复用，而不是断言所有硬件都执行完全相同的指令。</p>
+<h2>四、为什么缓存 K 和 V，而不是 Q？</h2>
+<p>现在看新位置 E 要完成什么计算：</p>
+<ul>
+<li>E 的 Q：决定它要从历史中查询什么。</li>
+<li>A～D 的 K：供 E 的 Q 计算匹配分数。</li>
+<li>A～D 的 V：根据匹配权重，提供需要汇总的信息。</li>
+</ul>
+<p>历史位置的 Q 已经完成了它们各自的查询。计算 E 的结果时，不需要再拿 A、B、C、D 的旧 Q 查询一遍；但 E 仍然需要它们的 K/V。</p>
+<p>因此，推理时缓存的是<strong>每一层历史位置的 K 和 V</strong>。E 自己的 Q、K、V 则在本轮计算，其中 K/V 会被加入缓存，供后续 Token 使用。</p>
+<p>把 E 的这一步简化写出来：</p>
+<span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mrow><mi mathvariant="normal">A</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">n</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">n</mi></mrow><mo stretchy="false">(</mo><msub><mi>q</mi><mi>E</mi></msub><mo separator="true">,</mo><mo stretchy="false">[</mo><msub><mi>K</mi><mrow><mi>A</mi><mo>:</mo><mi>D</mi></mrow></msub><mo separator="true">,</mo><msub><mi>k</mi><mi>E</mi></msub><mo stretchy="false">]</mo><mo separator="true">,</mo><mo stretchy="false">[</mo><msub><mi>V</mi><mrow><mi>A</mi><mo>:</mo><mi>D</mi></mrow></msub><mo separator="true">,</mo><msub><mi>v</mi><mi>E</mi></msub><mo stretchy="false">]</mo><mo stretchy="false">)</mo><mo>=</mo><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">f</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">m</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">x</mi></mrow><mrow><mo fence="true">(</mo><mfrac><mrow><msub><mi>q</mi><mi>E</mi></msub><mo stretchy="false">[</mo><msub><mi>K</mi><mrow><mi>A</mi><mo>:</mo><mi>D</mi></mrow></msub><mo separator="true">;</mo><msub><mi>k</mi><mi>E</mi></msub><msup><mo stretchy="false">]</mo><mi mathvariant="normal">⊤</mi></msup></mrow><msqrt><msub><mi>d</mi><mi>k</mi></msub></msqrt></mfrac><mo fence="true">)</mo></mrow><mo stretchy="false">[</mo><msub><mi>V</mi><mrow><mi>A</mi><mo>:</mo><mi>D</mi></mrow></msub><mo separator="true">;</mo><msub><mi>v</mi><mi>E</mi></msub><mo stretchy="false">]</mo></mrow><annotation encoding="application/x-tex">\mathrm{Attention}(q_E, [K_{A:D}, k_E], [V_{A:D}, v_E])
+=\mathrm{softmax}\left(\frac{q_E [K_{A:D};k_E]^\top}{\sqrt{d_k}}\right)[V_{A:D};v_E]</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="katex-base"><span class="katex-strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord"><span class="mord mathrm">Attention</span></span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0359em;">q</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0359em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.0576em;">E</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mopen">[</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0715em;">K</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0715em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">A</span><span class="mrel mtight">:</span><span class="mord mathnormal mtight" style="margin-right:0.0278em;">D</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0315em;">k</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0315em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.0576em;">E</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mclose">]</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mopen">[</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.2222em;">V</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.2222em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">A</span><span class="mrel mtight">:</span><span class="mord mathnormal mtight" style="margin-right:0.0278em;">D</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0359em;">v</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0359em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.0576em;">E</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mclose">])</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:2.4761em;vertical-align:-0.95em;"></span><span class="mord"><span class="mord mathrm">softmax</span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="minner"><span class="mopen delimcenter" style="top:0em;"><span class="delimsizing size3">(</span></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:1.5261em;"><span style="top:-2.2528em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord sqrt"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.8572em;"><span class="svg-align" style="top:-3em;"><span class="pstrut" style="height:3em;"></span><span class="mord" style="padding-left:0.833em;"><span class="mord"><span class="mord mathnormal">d</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:0em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.0315em;">k</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span></span></span><span style="top:-2.8172em;"><span class="pstrut" style="height:3em;"></span><span class="hide-tail" style="min-width:0.853em;height:1.08em;"><svg xmlns="http://www.w3.org/2000/svg" width="400em" height="1.08em" viewBox="0 0 400000 1080" preserveAspectRatio="xMinYMin slice"><path d="M95,702
+c-2.7,0,-7.17,-2.7,-13.5,-8c-5.8,-5.3,-9.5,-10,-9.5,-14
+c0,-2,0.3,-3.3,1,-4c1.3,-2.7,23.83,-20.7,67.5,-54
+c44.2,-33.3,65.8,-50.3,66.5,-51c1.3,-1.3,3,-2,5,-2c4.7,0,8.7,3.3,12,10
+s173,378,173,378c0.7,0,35.3,-71,104,-213c68.7,-142,137.5,-285,206.5,-429
+c69,-144,104.5,-217.7,106.5,-221
+l0 -0
+c5.3,-9.3,12,-14,20,-14
+H400000v40H845.2724
+s-225.272,467,-225.272,467s-235,486,-235,486c-2.7,4.7,-9,7,-19,7
+c-6,0,-10,-1,-12,-3s-194,-422,-194,-422s-65,47,-65,47z
+M834 80h400000v40h-400000z"/></svg></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.1828em;"><span></span></span></span></span></span></span></span><span style="top:-3.23em;"><span class="pstrut" style="height:3em;"></span><span class="frac-line" style="border-bottom-width:0.04em;"></span></span><span style="top:-3.677em;"><span class="pstrut" style="height:3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal" style="margin-right:0.0359em;">q</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0359em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.0576em;">E</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mopen">[</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0715em;">K</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0715em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">A</span><span class="mrel mtight">:</span><span class="mord mathnormal mtight" style="margin-right:0.0278em;">D</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mpunct">;</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0315em;">k</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0315em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.0576em;">E</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mclose"><span class="mclose">]</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height:0.8491em;"><span style="top:-3.063em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mtight">⊤</span></span></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.93em;"><span></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mclose delimcenter" style="top:0em;"><span class="delimsizing size3">)</span></span></span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mopen">[</span><span class="mord"><span class="mord mathnormal" style="margin-right:0.2222em;">V</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.2222em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">A</span><span class="mrel mtight">:</span><span class="mord mathnormal mtight" style="margin-right:0.0278em;">D</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mpunct">;</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0359em;">v</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0359em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right:0.0576em;">E</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mclose">]</span></span></span></span></span>
+<p>这里用一个 Attention 头说明计算关系，省略批次和层索引。真实模型会在每个需要缓存的 Attention 层分别保存自己的 K/V。</p>
+<p><strong>KV Cache 省掉的是旧位置的重复计算，不是新位置读取历史信息的计算。</strong> E 仍然要用自己的 Q 与历史 K 匹配，并按权重读取历史 V。</p>
+<h2>五、用实验检查：缓存有没有改变计算结果？</h2>
+<p>我们用 NumPy 构建了一个简化的双层因果 Attention 网络，对比两条路径：</p>
+<ul>
+<li><strong>全量重算</strong>：每次追加 Token，都重新计算整个前缀。</li>
+<li><strong>KV Cache</strong>：第一次处理完整 Prompt；之后每次只计算新位置，并复用每一层已经保存的 K/V。</li>
+</ul>
+<p>实验固定模型参数和输入，从 4 个位置开始，依次追加三个预先指定的 Token。使用预先指定的 Token，是为了让两条路径处理完全相同的输入；这项实验验证缓存计算是否等价，不测试模型生成质量。</p>
+<table>
+<thead>
+<tr>
+<th align="right">当前前缀长度</th>
+<th align="right">两条路径最后位置 Logits 的最大绝对差</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">4</td>
+<td align="right">0</td>
+</tr>
+<tr>
+<td align="right">5</td>
+<td align="right">2.776 × 10⁻¹⁷</td>
+</tr>
+<tr>
+<td align="right">6</td>
+<td align="right">1.388 × 10⁻¹⁷</td>
+</tr>
+<tr>
+<td align="right">7</td>
+<td align="right">0</td>
+</tr>
+</tbody></table>
+<p>四轮都通过 <code>np.allclose(rtol=1e-12, atol=1e-12)</code>。极小的非零差异来自浮点运算顺序不同，不代表两条路径使用了不同的模型参数。</p>
+<p>在这个教学网络中，如果只统计因果遮罩允许的 Query-Key 配对，全量重算共涉及 74 对，缓存路径涉及 28 对。这同样只是计算路径计数，不是 FLOPs 或真实推理速度的测量。</p>
+<p>实验省略了真实模型中的多头注意力、归一化、位置编码等细节。它验证的是：在这个固定参数的因果 Attention 网络里，按层缓存历史 K/V，可以得到与全量重算数值一致的结果。不能据此推断真实 GPU 上的具体加速倍数。</p>
+<p>完整代码：<a href="experiments/kv_cache_equivalence.py">双层 Attention 的 KV Cache 等价性验证</a>。</p>
+<h2>六、省掉重复计算，为什么还会增加显存压力？</h2>
+<p>因为模型要复用历史 K/V，就必须把它们保存下来。缓存越长，占用越大；同时处理的请求越多，总占用也越大。</p>
+<p>在不考虑内存对齐、预分配和其他运行时开销时，KV Cache 的容量可以粗略估算为：</p>
+<span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>M</mi><mrow><mi>K</mi><mi>V</mi></mrow></msub><mo>=</mo><mn>2</mn><mo>×</mo><mi>L</mi><mo>×</mo><mi>B</mi><mo>×</mo><mi>T</mi><mo>×</mo><msub><mi>H</mi><mrow><mi>K</mi><mi>V</mi></mrow></msub><mo>×</mo><msub><mi>D</mi><mrow><mi>h</mi><mi>e</mi><mi>a</mi><mi>d</mi></mrow></msub><mo>×</mo><mi>s</mi></mrow><annotation encoding="application/x-tex">M_{KV}=2\times L\times B\times T\times H_{KV}\times D_{head}\times s</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="katex-base"><span class="katex-strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.109em;">M</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.109em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.0715em;">K</span><span class="mord mathnormal mtight" style="margin-right:0.2222em;">V</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.7278em;vertical-align:-0.0833em;"></span><span class="mord">2</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.7667em;vertical-align:-0.0833em;"></span><span class="mord mathnormal">L</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.7667em;vertical-align:-0.0833em;"></span><span class="mord mathnormal" style="margin-right:0.0502em;">B</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.7667em;vertical-align:-0.0833em;"></span><span class="mord mathnormal" style="margin-right:0.1389em;">T</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0813em;">H</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3283em;"><span style="top:-2.55em;margin-left:-0.0813em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right:0.0715em;">K</span><span class="mord mathnormal mtight" style="margin-right:0.2222em;">V</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.8333em;vertical-align:-0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right:0.0278em;">D</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height:0.3361em;"><span style="top:-2.55em;margin-left:-0.0278em;margin-right:0.05em;"><span class="pstrut" style="height:2.7em;"></span><span class="katex-sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">h</span><span class="mord mathnormal mtight">e</span><span class="mord mathnormal mtight">a</span><span class="mord mathnormal mtight">d</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height:0.15em;"><span></span></span></span></span></span></span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.4306em;"></span><span class="mord mathnormal">s</span></span></span></span></span>
+<p>其中：</p>
+<ul>
+<li>2：分别保存 K 和 V。</li>
+<li>L：Attention 层数。</li>
+<li>B：同时处理的请求数量（Batch）。</li>
+<li>T：每个请求缓存的 Token 数量。</li>
+<li><code>H_KV</code>：每层的 KV Head 数量。</li>
+<li><code>D_head</code>：每个 Head 的维度。</li>
+<li>s：每个数值占用的字节数。</li>
+</ul>
+<p>例如，假设模型有 32 层、8 个 KV Head、每个 Head 维度为 128，使用 FP16（每个数值 2 字节），单个请求的上下文长度为 4096：</p>
+<span class="katex-display"><span class="katex"><span class="katex-mathml"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mn>2</mn><mo>×</mo><mn>32</mn><mo>×</mo><mn>1</mn><mo>×</mo><mn>4096</mn><mo>×</mo><mn>8</mn><mo>×</mo><mn>128</mn><mo>×</mo><mn>2</mn><mo>=</mo><mn>536,870,912</mn><mtext> Bytes</mtext><mo>=</mo><mn>512</mn><mtext> MiB</mtext></mrow><annotation encoding="application/x-tex">2\times32\times1\times4096\times8\times128\times2
+=536{,}870{,}912\ \text{Bytes}=512\ \text{MiB}</annotation></semantics></math></span><span class="katex-html" aria-hidden="true"><span class="katex-base"><span class="katex-strut" style="height:0.7278em;vertical-align:-0.0833em;"></span><span class="mord">2</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.7278em;vertical-align:-0.0833em;"></span><span class="mord">32</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.7278em;vertical-align:-0.0833em;"></span><span class="mord">1</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.7278em;vertical-align:-0.0833em;"></span><span class="mord">4096</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.7278em;vertical-align:-0.0833em;"></span><span class="mord">8</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.7278em;vertical-align:-0.0833em;"></span><span class="mord">128</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.6444em;"></span><span class="mord">2</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.8778em;vertical-align:-0.1944em;"></span><span class="mord">536</span><span class="mord"><span class="mpunct">,</span></span><span class="mord">870</span><span class="mord"><span class="mpunct">,</span></span><span class="mord">912</span><span class="mspace"> </span><span class="mord text"><span class="mord">Bytes</span></span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="katex-base"><span class="katex-strut" style="height:0.6833em;"></span><span class="mord">512</span><span class="mspace"> </span><span class="mord text"><span class="mord">MiB</span></span></span></span></span></span>
+<p>同样配置下，如果每个请求都是 4096 个 Token：</p>
+<table>
+<thead>
+<tr>
+<th align="right">同时处理的请求数</th>
+<th align="right">KV Cache 总量</th>
+</tr>
+</thead>
+<tbody><tr>
+<td align="right">1</td>
+<td align="right">512 MiB</td>
+</tr>
+<tr>
+<td align="right">2</td>
+<td align="right">1 GiB</td>
+</tr>
+<tr>
+<td align="right">5</td>
+<td align="right">2.5 GiB</td>
+</tr>
+<tr>
+<td align="right">10</td>
+<td align="right">5 GiB</td>
+</tr>
+</tbody></table>
+<p>这里假设每个请求的缓存长度相同或接近；如果请求长度不同，应按每个请求实际缓存的 Token 数分别计算。这只是 KV Cache 的理论容量，不包括模型权重、其他中间结果和推理框架预留的显存。它说明了为什么长上下文和高并发会带来显存压力。</p>
+<p>还要注意，KV Cache 通常属于正在执行的请求：请求完成后，缓存会被释放或回收到内存池，并不是每多问一次就永久累积一份。多轮对话中，如果服务端把之前的聊天记录重新放进下一轮 Prompt，新的请求仍可能需要 Prefill 这些历史 Token；跨请求复用相同前缀属于 Prefix Caching 等另一类优化，不是这里讨论的请求内 KV Cache。</p>
+<p>此外，缓存并没有让 Decode 与上下文长度脱钩。每生成一个新 Token，它的 Q 仍要读取当前有效上下文中的 K/V；上下文越长，需要访问的历史数据通常也越多。因此，KV Cache 是用显存和内存访问，换取避免重复计算的机会，并不意味着上下文越长也能保持相同的生成成本。</p>
+<h2>回到最初的问题</h2>
+<p>GPT 不必在每轮生成时重新计算整个前缀，是因为因果遮罩保证了旧位置不会受到未来 Token 影响。Prefill 先处理已知 Prompt 并建立初始缓存；Decode 再用新 Token 的 Q 读取历史 K/V，只计算并保存新位置的 K/V。</p>
+<p><strong>KV Cache 减少了重复计算，但把一部分成本转移到了显存和历史数据读取上。</strong></p>
+<p>下一步值得研究的是：当上下文变长、并发增加时，Prefill 的首 Token 等待时间、Decode 的逐 Token 速度和 GPU 显存之间，究竟如何相互影响？</p>
+<hr>
+<p><strong>资料与核验</strong></p>
+<ul>
+<li><a href="https://huggingface.co/docs/transformers/v4.57.1/cache_explanation">Hugging Face Transformers：Caching</a> —— 因果 Attention 下每层历史 K/V 的复用方式。</li>
+<li><a href="https://huggingface.co/docs/transformers/kv_cache">Hugging Face Transformers：Cache strategies</a> —— 动态、静态、量化与卸载缓存的工程取舍；具体 API 以文档所述版本为准。</li>
+<li><a href="https://docs.pytorch.org/docs/main/generated/torch.nn.functional.scaled_dot_product_attention.html">PyTorch：Scaled Dot Product Attention</a> —— Attention 算法与掩码语义。</li>
+<li><a href="https://developer.nvidia.com/blog/co-designing-ai-model-attention-for-fast-interactive-long-context-inference">NVIDIA：Co-Designing AI Model Attention for Fast, Interactive Long-Context Inference</a> —— Prefill 与 Decode 在典型推理工作负载下的计算和内存访问差异。Prefill 常见的计算密集、Decode 常见的内存访问瓶颈，取决于具体模型、硬件和负载，不是无条件定律。</li>
+</ul>
+</article></div><div class="ending"><a href="/">← 返回文章列表</a></div></div></main><footer class="footer"><div class="shell footer-row"><span>© 2026 James Notes · 保持好奇，持续验证</span><span>Built with Astro · Published from Git</span></div></footer></body></html>
